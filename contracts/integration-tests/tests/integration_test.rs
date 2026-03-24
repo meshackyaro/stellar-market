@@ -19,6 +19,40 @@ use stellar_market_dispute::{DisputeContract, DisputeContractClient, DisputeStat
 use stellar_market_escrow::{EscrowContract, EscrowContractClient, JobStatus, MilestoneStatus};
 use stellar_market_reputation::{ReputationContract, ReputationContractClient};
 
+// Mock reputation contract that always returns high reputation for any user.
+// Used in dispute integration tests so that randomly-generated voter addresses
+// pass the eligibility check without needing real reputation records.
+mod mock_reputation {
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct UserReputation {
+        pub user: Address,
+        pub total_score: u64,
+        pub total_weight: u64,
+        pub review_count: u32,
+    }
+
+    #[contract]
+    pub struct MockReputationContract;
+
+    #[contractimpl]
+    impl MockReputationContract {
+        pub fn get_reputation(
+            _env: Env,
+            user: Address,
+        ) -> Result<UserReputation, soroban_sdk::Error> {
+            Ok(UserReputation {
+                user,
+                total_score: 500,
+                total_weight: 10,
+                review_count: 5,
+            })
+        }
+    }
+}
+
 /// A future timestamp safely beyond the default ledger time in tests (0).
 const DEADLINE: u64 = 9_999_999_999;
 /// Auto-refund window starts after the job deadline.
@@ -175,8 +209,10 @@ fn test_dispute_resolved_for_freelancer() {
     let escrow_id = env.register_contract(None, EscrowContract);
     let escrow_client = EscrowContractClient::new(&env, &escrow_id);
 
-    let dispute_id = env.register_contract(None, DisputeContract);
-    let dispute_client = DisputeContractClient::new(&env, &dispute_id);
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let dispute_client = DisputeContractClient::new(&env, &dispute_contract_id);
+
+    let mock_rep_id = env.register_contract(None, mock_reputation::MockReputationContract);
 
     // Create participants
     let client = Address::generate(&env);
@@ -187,6 +223,9 @@ fn test_dispute_resolved_for_freelancer() {
     let (token_address, token) = create_token_contract(&env, &admin);
     mint_tokens(&env, &token_address, &admin, &client, 100_000_000);
     mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+
+    // Initialize dispute contract with mock reputation
+    dispute_client.initialize(&admin, &mock_rep_id, &0, &escrow_id);
 
     // Create and fund job
     let milestones = vec![
@@ -281,8 +320,10 @@ fn test_dispute_resolved_for_client() {
     let escrow_id = env.register_contract(None, EscrowContract);
     let escrow_client = EscrowContractClient::new(&env, &escrow_id);
 
-    let dispute_id = env.register_contract(None, DisputeContract);
-    let dispute_client = DisputeContractClient::new(&env, &dispute_id);
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let dispute_client = DisputeContractClient::new(&env, &dispute_contract_id);
+
+    let mock_rep_id = env.register_contract(None, mock_reputation::MockReputationContract);
 
     // Create participants
     let client = Address::generate(&env);
@@ -293,6 +334,9 @@ fn test_dispute_resolved_for_client() {
     let (token_address, token) = create_token_contract(&env, &admin);
     mint_tokens(&env, &token_address, &admin, &client, 100_000_000);
     mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+
+    // Initialize dispute contract with mock reputation
+    dispute_client.initialize(&admin, &mock_rep_id, &0, &escrow_id);
 
     // Create job with multiple milestones
     let milestones = vec![
@@ -526,8 +570,10 @@ fn test_dispute_with_all_milestones_approved() {
     let escrow_id = env.register_contract(None, EscrowContract);
     let escrow_client = EscrowContractClient::new(&env, &escrow_id);
 
-    let dispute_id = env.register_contract(None, DisputeContract);
-    let dispute_client = DisputeContractClient::new(&env, &dispute_id);
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let dispute_client = DisputeContractClient::new(&env, &dispute_contract_id);
+
+    let mock_rep_id = env.register_contract(None, mock_reputation::MockReputationContract);
 
     let client = Address::generate(&env);
     let freelancer = Address::generate(&env);
@@ -535,6 +581,9 @@ fn test_dispute_with_all_milestones_approved() {
 
     let (token_address, token) = create_token_contract(&env, &admin);
     mint_tokens(&env, &token_address, &admin, &client, 10_000);
+
+    // Initialize dispute contract with mock reputation
+    dispute_client.initialize(&admin, &mock_rep_id, &0, &escrow_id);
 
     let milestones = vec![&env, (String::from_str(&env, "Work"), 2_000_i128, DEADLINE)];
 
