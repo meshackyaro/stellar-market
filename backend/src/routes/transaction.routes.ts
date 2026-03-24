@@ -23,13 +23,13 @@ const createTransactionSchema = {
 
 const listTransactionsSchema = {
   query: z.object({
-    page: z.string().optional().default("1"),
-    limit: z.string().optional().default("20"),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
     type: z.enum(["DEPOSIT", "RELEASE", "REFUND", "DISPUTE_PAYOUT"]).optional(),
     dateFrom: z.string().optional(),
     dateTo: z.string().optional(),
-    minAmount: z.string().optional(),
-    maxAmount: z.string().optional(),
+    minAmount: z.coerce.number().optional(),
+    maxAmount: z.coerce.number().optional(),
   }),
 };
 
@@ -38,8 +38,8 @@ const jobTransactionsSchema = {
     jobId: z.string(),
   }),
   query: z.object({
-    page: z.string().optional().default("1"),
-    limit: z.string().optional().default("20"),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
   }),
 };
 
@@ -156,8 +156,8 @@ router.get(
       }
 
       const {
-        page = "1",
-        limit = "20",
+        page = 1,
+        limit = 20,
         type,
         dateFrom,
         dateTo,
@@ -165,9 +165,7 @@ router.get(
         maxAmount,
       } = req.query;
 
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const skip = (page - 1) * limit;
 
       // Build filter
       const where: any = {
@@ -194,10 +192,10 @@ router.get(
       if (minAmount || maxAmount) {
         where.amount = {};
         if (minAmount) {
-          where.amount.gte = parseFloat(minAmount as string);
+          where.amount.gte = minAmount;
         }
         if (maxAmount) {
-          where.amount.lte = parseFloat(maxAmount as string);
+          where.amount.lte = maxAmount;
         }
       }
 
@@ -206,7 +204,7 @@ router.get(
         prisma.transaction.findMany({
           where,
           skip,
-          take: limitNum,
+          take: limit,
           orderBy: { createdAt: "desc" },
           include: {
             job: {
@@ -229,10 +227,10 @@ router.get(
       res.json({
         transactions,
         pagination: {
-          page: pageNum,
-          limit: limitNum,
+          page,
+          limit,
           total,
-          totalPages: Math.ceil(total / limitNum),
+          totalPages: Math.ceil(total / limit),
         },
       });
     } catch (error) {
@@ -347,11 +345,9 @@ router.get(
   async (req: AuthRequest, res: Response) => {
     try {
       const jobId = req.params.jobId as string;
-      const { page = "1", limit = "20" } = req.query;
+      const { page = 1, limit = 20 } = req.query as any;
 
-      const pageNum = parseInt(page as string);
-      const limitNum = parseInt(limit as string);
-      const skip = (pageNum - 1) * limitNum;
+      const skip = (page - 1) * limit;
 
       // Verify job exists and user has access
       const job = await prisma.job.findUnique({
@@ -376,7 +372,7 @@ router.get(
         prisma.transaction.findMany({
           where: { jobId },
           skip,
-          take: limitNum,
+          take: limit,
           orderBy: { createdAt: "asc" },
           include: {
             milestone: {
@@ -394,10 +390,10 @@ router.get(
       res.json({
         transactions,
         pagination: {
-          page: pageNum,
-          limit: limitNum,
+          page,
+          limit,
           total,
-          totalPages: Math.ceil(total / limitNum),
+          totalPages: Math.ceil(total / limit),
         },
       });
     } catch (error) {
