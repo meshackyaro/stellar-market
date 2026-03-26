@@ -1,5 +1,21 @@
-import { DisputeStatus, JobStatus } from "@prisma/client";
 import { DisputeService } from "../services/dispute.service";
+
+// Local runtime-friendly enums for tests (use string literals to avoid TS value/type mismatch
+// when importing generated Prisma types). This keeps tests stable and avoids relying on the
+// runtime shape of @prisma/client exports during TypeScript compile.
+const DisputeStatus = {
+  OPEN: "OPEN",
+  IN_PROGRESS: "IN_PROGRESS",
+  RESOLVED: "RESOLVED",
+} as const;
+
+const JobStatus = {
+  OPEN: "OPEN",
+  IN_PROGRESS: "IN_PROGRESS",
+  COMPLETED: "COMPLETED",
+  CANCELLED: "CANCELLED",
+  DISPUTED: "DISPUTED",
+} as const;
 
 // ─── Prisma mock ─────────────────────────────────────────────────────────────
 jest.mock("@prisma/client", () => {
@@ -106,12 +122,15 @@ describe("Dispute Management System", () => {
       prismaMock.job.findUnique.mockResolvedValueOnce(mockJob);
       prismaMock.dispute.findUnique.mockResolvedValueOnce(null);
       prismaMock.dispute.create.mockResolvedValueOnce(mockDispute);
-      prismaMock.job.update.mockResolvedValueOnce({ ...mockJob, status: JobStatus.DISPUTED });
+      prismaMock.job.update.mockResolvedValueOnce({
+        ...mockJob,
+        status: JobStatus.DISPUTED,
+      });
 
       const dispute = await DisputeService.createDispute(
         jobId,
         clientId,
-        "The freelancer did not deliver the work as agreed"
+        "The freelancer did not deliver the work as agreed",
       );
 
       expect(dispute).toBeDefined();
@@ -124,7 +143,7 @@ describe("Dispute Management System", () => {
         expect.objectContaining({
           where: { id: jobId },
           data: expect.objectContaining({ status: JobStatus.DISPUTED }),
-        })
+        }),
       );
     });
 
@@ -133,7 +152,11 @@ describe("Dispute Management System", () => {
       prismaMock.dispute.findUnique.mockResolvedValueOnce(mockDispute);
 
       await expect(
-        DisputeService.createDispute(jobId, freelancerId, "Another dispute reason")
+        DisputeService.createDispute(
+          jobId,
+          freelancerId,
+          "Another dispute reason",
+        ),
       ).rejects.toThrow("A dispute already exists for this job");
     });
 
@@ -141,16 +164,22 @@ describe("Dispute Management System", () => {
       prismaMock.job.findUnique.mockResolvedValueOnce(mockJob);
 
       await expect(
-        DisputeService.createDispute(jobId, voterId, "I want to dispute this")
+        DisputeService.createDispute(jobId, voterId, "I want to dispute this"),
       ).rejects.toThrow("Only job participants can raise a dispute");
     });
 
     it("should reject dispute for job without freelancer", async () => {
-      prismaMock.job.findUnique.mockResolvedValueOnce({ ...mockJob, freelancer: null, freelancerId: null });
+      prismaMock.job.findUnique.mockResolvedValueOnce({
+        ...mockJob,
+        freelancer: null,
+        freelancerId: null,
+      });
 
       await expect(
-        DisputeService.createDispute(jobId, clientId, "No freelancer assigned")
-      ).rejects.toThrow("Job must have an assigned freelancer to raise a dispute");
+        DisputeService.createDispute(jobId, clientId, "No freelancer assigned"),
+      ).rejects.toThrow(
+        "Job must have an assigned freelancer to raise a dispute",
+      );
     });
   });
 
@@ -168,16 +197,16 @@ describe("Dispute Management System", () => {
       expect(dispute).toBeDefined();
       expect(dispute.id).toBe(disputeId);
       expect(prismaMock.dispute.findUnique).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { id: disputeId } })
+        expect.objectContaining({ where: { id: disputeId } }),
       );
     });
 
     it("should throw error for non-existent dispute", async () => {
       prismaMock.dispute.findUnique.mockResolvedValueOnce(null);
 
-      await expect(DisputeService.getDisputeById("non-existent-id")).rejects.toThrow(
-        "Dispute not found"
-      );
+      await expect(
+        DisputeService.getDisputeById("non-existent-id"),
+      ).rejects.toThrow("Dispute not found");
     });
   });
 
@@ -186,7 +215,10 @@ describe("Dispute Management System", () => {
       prismaMock.dispute.findMany.mockResolvedValueOnce([mockDispute]);
       prismaMock.dispute.count.mockResolvedValueOnce(1);
 
-      const result = await DisputeService.getDisputes({}, { page: 1, limit: 10 });
+      const result = await DisputeService.getDisputes(
+        {},
+        { page: 1, limit: 10 },
+      );
 
       expect(result.disputes).toBeDefined();
       expect(Array.isArray(result.disputes)).toBe(true);
@@ -200,12 +232,15 @@ describe("Dispute Management System", () => {
       prismaMock.dispute.findMany.mockResolvedValueOnce([mockDispute]);
       prismaMock.dispute.count.mockResolvedValueOnce(1);
 
-      await DisputeService.getDisputes({ status: DisputeStatus.OPEN }, { page: 1, limit: 10 });
+      await DisputeService.getDisputes(
+        { status: DisputeStatus.OPEN },
+        { page: 1, limit: 10 },
+      );
 
       expect(prismaMock.dispute.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { status: DisputeStatus.OPEN },
-        })
+        }),
       );
     });
   });
@@ -218,7 +253,12 @@ describe("Dispute Management System", () => {
       choice: "CLIENT",
       reason: "Valid concerns",
       createdAt: new Date(),
-      voter: { id: voterId, username: "testvoter", walletAddress: "GVOTER123", avatarUrl: null },
+      voter: {
+        id: voterId,
+        username: "testvoter",
+        walletAddress: "GVOTER123",
+        avatarUrl: null,
+      },
     };
 
     it("should cast a vote successfully", async () => {
@@ -234,7 +274,7 @@ describe("Dispute Management System", () => {
         disputeId,
         voterId,
         "CLIENT",
-        "The client has valid concerns"
+        "The client has valid concerns",
       );
 
       expect(vote).toBeDefined();
@@ -248,7 +288,12 @@ describe("Dispute Management System", () => {
       prismaMock.disputeVote.findUnique.mockResolvedValueOnce(mockVote);
 
       await expect(
-        DisputeService.castVote(disputeId, voterId, "FREELANCER", "Changed my mind")
+        DisputeService.castVote(
+          disputeId,
+          voterId,
+          "FREELANCER",
+          "Changed my mind",
+        ),
       ).rejects.toThrow("You have already voted on this dispute");
     });
 
@@ -256,7 +301,12 @@ describe("Dispute Management System", () => {
       prismaMock.dispute.findUnique.mockResolvedValueOnce(mockDispute);
 
       await expect(
-        DisputeService.castVote(disputeId, clientId, "CLIENT", "I vote for myself")
+        DisputeService.castVote(
+          disputeId,
+          clientId,
+          "CLIENT",
+          "I vote for myself",
+        ),
       ).rejects.toThrow("Dispute participants cannot vote");
     });
 
@@ -267,7 +317,7 @@ describe("Dispute Management System", () => {
       });
 
       await expect(
-        DisputeService.castVote(disputeId, voterId, "CLIENT", "Late vote")
+        DisputeService.castVote(disputeId, voterId, "CLIENT", "Late vote"),
       ).rejects.toThrow("Cannot vote on a resolved dispute");
     });
   });
@@ -298,13 +348,19 @@ describe("Dispute Management System", () => {
         resolvedAt: new Date(),
         votes: [],
       };
-      prismaMock.dispute.findUnique.mockResolvedValueOnce({ ...mockDispute, votes: [] });
+      prismaMock.dispute.findUnique.mockResolvedValueOnce({
+        ...mockDispute,
+        votes: [],
+      });
       prismaMock.dispute.update.mockResolvedValueOnce(resolvedDispute);
-      prismaMock.job.update.mockResolvedValueOnce({ ...mockJob, status: JobStatus.COMPLETED });
+      prismaMock.job.update.mockResolvedValueOnce({
+        ...mockJob,
+        status: JobStatus.COMPLETED,
+      });
 
       const dispute = await DisputeService.resolveDispute(
         disputeId,
-        "Resolved in favor of client based on community vote"
+        "Resolved in favor of client based on community vote",
       );
 
       expect(dispute).toBeDefined();
@@ -320,7 +376,7 @@ describe("Dispute Management System", () => {
       });
 
       await expect(
-        DisputeService.resolveDispute(disputeId, "Trying to resolve again")
+        DisputeService.resolveDispute(disputeId, "Trying to resolve again"),
       ).rejects.toThrow("Dispute is already resolved");
     });
   });
@@ -343,7 +399,7 @@ describe("Dispute Management System", () => {
         expect.objectContaining({
           where: { id: disputeId },
           data: { onChainDisputeId: "12345" },
-        })
+        }),
       );
     });
 
@@ -352,7 +408,7 @@ describe("Dispute Management System", () => {
         DisputeService.processWebhook({
           type: "UNKNOWN_TYPE" as any,
           disputeId: "test",
-        })
+        }),
       ).rejects.toThrow("Unknown webhook type");
     });
   });
