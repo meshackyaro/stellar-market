@@ -1217,6 +1217,10 @@ impl EscrowContract {
             .get(milestone_id)
             .ok_or(EscrowError::MilestoneNotFound)?;
 
+        if new_deadline <= milestone.deadline {
+            return Err(EscrowError::InvalidDeadline);
+        }
+
         milestone.deadline = new_deadline;
         milestones.set(milestone_id, milestone);
 

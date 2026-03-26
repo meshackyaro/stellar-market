@@ -226,6 +226,35 @@ fn test_extend_deadline() {
     assert_eq!(job.milestones.get(0).unwrap().deadline, 4000);
 }
 
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #7)")] // InvalidDeadline
+fn test_extend_deadline_cannot_move_backward() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let contract_id = env.register_contract(None, EscrowContract);
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let milestones = vec![&env, (String::from_str(&env, "Task 1"), 100_i128, 2000_u64)];
+
+    let job_id = client.create_job(
+        &user,
+        &freelancer,
+        &token,
+        &milestones,
+        &3000_u64,
+        &GRACE_PERIOD,
+    );
+
+    // new_deadline (1500) is in the future but less than milestone.deadline (2000)
+    client.extend_deadline(&job_id, &0, &1500_u64);
+}
+
 // ── Helpers for claim_refund tests ───────────────────────────────────────────
 
 fn setup_refund_env(env: &Env) -> (EscrowContractClient<'_>, Address) {

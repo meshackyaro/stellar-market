@@ -225,6 +225,16 @@ router.delete(
         .json({ error: "Not authorized to delete this milestone." });
     }
 
+    if (
+      milestone.onChainIndex !== null ||
+      !["UNFUNDED"].includes((milestone as any).job.escrowStatus)
+    ) {
+      return res.status(409).json({
+        error:
+          "Cannot delete a milestone once the escrow is funded. Use the revision flow.",
+      });
+    }
+
     await prisma.milestone.delete({ where: { id } });
     res.json({ message: "Milestone deleted successfully." });
   }),

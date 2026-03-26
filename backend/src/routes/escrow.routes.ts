@@ -204,4 +204,46 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
   res.json({ message: "Transaction confirmed and database updated." });
 }));
 
+/**
+ * Read current on-chain job state without initiating a transaction.
+ */
+router.get("/:jobId/status", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
+  const jobId = req.params.jobId as string;
+
+  const job = await prisma.job.findUnique({
+    where: { id: jobId },
+  });
+
+  if (!job) {
+    return res.status(404).json({ error: "Job not found." });
+  }
+
+  if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+    return res.status(403).json({ error: "Not authorized to view this job's escrow status." });
+  }
+
+  if (!job.contractJobId) {
+    return res.status(404).json({ error: "Job has not been created on-chain yet." });
+  }
+
+  const onChainJob = await ContractService.getJob(job.contractJobId);
+  if (!onChainJob) {
+    return res.status(404).json({ error: "On-chain job not found." });
+  }
+
+  const statusOf = (v: unknown): string =>
+    Array.isArray(v) ? String(v[0]) : String(v);
+
+  res.json({
+    contractJobId: Number(job.contractJobId),
+    status: statusOf(onChainJob.status),
+    totalAmount: String(onChainJob.total_amount),
+    milestones: (onChainJob.milestones as unknown[]).map((m: unknown, index: number) => ({
+      index,
+      status: statusOf((m as any).status),
+      amount: String((m as any).amount),
+    })),
+  });
+}));
+
 export default router;

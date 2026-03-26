@@ -1,12 +1,13 @@
-import { 
-  Address, 
-  Asset, 
-  Contract, 
-  Keypair, 
-  Networks, 
-  rpc, 
-  scValToNative, 
-  TransactionBuilder, 
+import {
+  Account,
+  Address,
+  Asset,
+  Contract,
+  Keypair,
+  Networks,
+  rpc,
+  scValToNative,
+  TransactionBuilder,
   xdr,
   nativeToScVal,
   BASE_FEE
@@ -122,6 +123,29 @@ export class ContractService {
         return { success: true, result: response.resultXdr };
     }
     return { success: false, error: response.status };
+  }
+
+  /**
+   * Reads on-chain job state via simulation (no signature required).
+   */
+  static async getJob(jobId: string) {
+    const contract = new Contract(contractId);
+    const account = new Account(Keypair.random().publicKey(), "0");
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(contract.call("get_job", nativeToScVal(BigInt(jobId))))
+      .setTimeout(0)
+      .build();
+
+    const simResult = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(simResult) || !simResult.result) {
+      return null;
+    }
+
+    return scValToNative(simResult.result.retval);
   }
 
   /**
