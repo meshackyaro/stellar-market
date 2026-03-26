@@ -917,7 +917,7 @@ impl ReputationContract {
                 }
             };
 
-            if weight > 0 {
+            if weight > 0 && bonus.weight > 0 {
                 // amount is already rating * weight in process_referral_bonus
                 // but wait, earned_score = bonus_rating * min_stake;
                 // so if we decay the weight, we should decay the score too.
