@@ -155,7 +155,7 @@ export default function ProfilePage() {
           <p className="text-lg text-theme-text mb-4 max-w-2xl">
             {profile.bio || "No bio yet"}
           </p>
-          
+
           {/* Skills */}
           {profile.skills && profile.skills.length > 0 ? (
             <div className="mb-6">
@@ -246,11 +246,10 @@ export default function ProfilePage() {
           <div className="flex gap-8 mb-8 border-b border-theme-border overflow-x-auto pb-px">
             <button
               onClick={() => setActiveTab("reviews")}
-              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${
-                activeTab === "reviews"
-                  ? "text-stellar-blue"
-                  : "text-theme-text hover:text-theme-heading"
-              }`}
+              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${activeTab === "reviews"
+                ? "text-stellar-blue"
+                : "text-theme-text hover:text-theme-heading"
+                }`}
             >
               Reviews ({profile.reviewCount})
               {activeTab === "reviews" && (
@@ -259,11 +258,10 @@ export default function ProfilePage() {
             </button>
             <button
               onClick={() => setActiveTab("freelancerJobs")}
-              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${
-                activeTab === "freelancerJobs"
-                  ? "text-stellar-blue"
-                  : "text-theme-text hover:text-theme-heading"
-              }`}
+              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${activeTab === "freelancerJobs"
+                ? "text-stellar-blue"
+                : "text-theme-text hover:text-theme-heading"
+                }`}
             >
               Completed as Freelancer ({profile.freelancerJobs.length})
               {activeTab === "freelancerJobs" && (
@@ -272,11 +270,10 @@ export default function ProfilePage() {
             </button>
             <button
               onClick={() => setActiveTab("clientJobs")}
-              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${
-                activeTab === "clientJobs"
-                  ? "text-stellar-blue"
-                  : "text-theme-text hover:text-theme-heading"
-              }`}
+              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${activeTab === "clientJobs"
+                ? "text-stellar-blue"
+                : "text-theme-text hover:text-theme-heading"
+                }`}
             >
               Completed as Client ({profile.clientJobs.length})
               {activeTab === "clientJobs" && (
