@@ -10,7 +10,7 @@ import { useAuth } from "@/context/AuthContext";
 import StatusBadge from "@/components/StatusBadge";
 import ApplyModal from "@/components/ApplyModal";
 import RaiseDisputeModal from "@/components/RaiseDisputeModal";
-import { Job, Application } from "@/types";
+import { Job, Application, PaginatedResponse } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
@@ -34,16 +34,33 @@ export default function JobDetailPage() {
   const fetchJob = useCallback(async () => {
     try {
       const token = localStorage.getItem("token");
+      setHasApplied(false);
+
       const res = await axios.get(`${API_URL}/jobs/${id}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       setJob(res.data);
+
+      if (token && user?.role === "FREELANCER") {
+        try {
+          const appsRes = await axios.get<PaginatedResponse<Application>>(
+            `${API_URL}/applications`,
+            {
+              params: { jobId: id, freelancerId: user.id, limit: 1 },
+              headers: { Authorization: `Bearer ${token}` },
+            },
+          );
+          setHasApplied(appsRes.data.total > 0);
+        } catch {
+          setHasApplied(false);
+        }
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to fetch job details.");
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, user]);
 
   useEffect(() => {
     fetchJob();
