@@ -1217,3 +1217,84 @@ fn test_referral_bonus_not_granted_twice() {
     let subsequent_stats = reputation_client.get_referral_stats(&referrer);
     assert_eq!(initial_stats.earned_bonus, subsequent_stats.earned_bonus);
 }
+
+/// Verifies that submitting a first review for a (reviewer, job_id) pair succeeds
+/// and updates the reviewee's reputation correctly.
+#[test]
+fn test_first_review_succeeds_and_updates_reputation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &client_addr, 100_000_000);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &client_addr, &freelancer_addr, &token_addr);
+
+    reputation_client.submit_review(
+        &escrow_id,
+        &client_addr,
+        &freelancer_addr,
+        &1u64,
+        &5u32,
+        &String::from_str(&env, "Excellent work!"),
+        &MIN_STAKE,
+    );
+
+    let rep = reputation_client.get_reputation(&freelancer_addr);
+    assert_eq!(rep.review_count, 1);
+    assert_eq!(rep.total_score, 5 * MIN_STAKE as u64);
+    assert_eq!(rep.total_weight, MIN_STAKE as u64);
+}
+
+/// Verifies that a second submit_review call with the same (reviewer, job_id)
+/// is rejected with AlreadyReviewed (contract error #2), preventing score inflation.
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_duplicate_review_rejected_with_already_reviewed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+
+    let client_addr = Address::generate(&env);
+    let freelancer_addr = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &client_addr, 100_000_000);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &client_addr, &freelancer_addr, &token_addr);
+
+    // First submission succeeds
+    reputation_client.submit_review(
+        &escrow_id,
+        &client_addr,
+        &freelancer_addr,
+        &1u64,
+        &5u32,
+        &String::from_str(&env, "Great work!"),
+        &MIN_STAKE,
+    );
+
+    // Advance past the rate-limit window so RateLimitExceeded does not fire first
+    env.ledger().with_mut(|l| l.sequence_number = 200);
+
+    // Second submission for the same (reviewer, job_id) must return AlreadyReviewed
+    reputation_client.submit_review(
+        &escrow_id,
+        &client_addr,
+        &freelancer_addr,
+        &1u64,
+        &5u32,
+        &String::from_str(&env, "Duplicate attempt!"),
+        &MIN_STAKE,
+    );
+}

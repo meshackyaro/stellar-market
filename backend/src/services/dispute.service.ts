@@ -1,7 +1,10 @@
-// @ts-nocheck
+/**
+ * Dispute Management Service
+ * Handles dispute creation, voting, resolution, and webhook processing
+ */
 import { PrismaClient, DisputeStatus, JobStatus } from "@prisma/client";
 
-const prisma: any = new PrismaClient();
+const prisma = new PrismaClient();
 
 export class DisputeService {
   /**
@@ -232,6 +235,7 @@ export class DisputeService {
 
   /**
    * Cast a vote on a dispute
+   * Validates voter eligibility and prevents duplicate votes
    */
   static async castVote(
     disputeId: string,
