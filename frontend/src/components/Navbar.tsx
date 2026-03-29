@@ -11,6 +11,7 @@ import {
   PenLine,
   LogOut,
   User as UserIcon,
+  Users,
   Settings,
   Search,
   ShieldCheck,
@@ -223,6 +224,13 @@ export default function Navbar() {
             >
               <Search size={16} />
               Services
+            </Link>
+            <Link
+              href="/freelancers"
+              className="text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
+            >
+              <Users size={16} />
+              Talent
             </Link>
             <Link
               href="/disputes"

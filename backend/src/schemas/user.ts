@@ -24,6 +24,7 @@ export const updateUserProfileSchema = z.object({
 export const getUsersQuerySchema = paginationSchema.extend({
   search: z.string().optional(),
   skill: z.string().optional(),
+  role: z.enum(["CLIENT", "FREELANCER"]).optional(),
 });
 
 export const getUserJobsQuerySchema = paginationSchema;
