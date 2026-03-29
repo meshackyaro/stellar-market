@@ -381,7 +381,6 @@ export default function JobDetailPage() {
   );
   const isOwnJob = user?.id === job.client.id || isClient;
   const isOwner = user?.id === job.client.id;
-  const isFreelancer = user?.role === "FREELANCER";
   const isPartyOnJob = Boolean(
     user &&
     address &&
