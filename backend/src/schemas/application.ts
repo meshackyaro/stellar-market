@@ -5,8 +5,8 @@ export const createApplicationSchema = z.object({
   jobId: z.string().min(1, "Job ID is required"),
   proposal: z
     .string()
-    .min(50, "Proposal must be at least 50 characters long")
-    .max(5000, "Proposal must be less than 5000 characters"),
+    .min(20, "Cover letter must be at least 20 characters long")
+    .max(2000, "Cover letter must be less than 2000 characters"),
   estimatedDuration: z
     .number()
     .int()
@@ -17,8 +17,8 @@ export const createApplicationSchema = z.object({
 export const updateApplicationSchema = z.object({
   proposal: z
     .string()
-    .min(50, "Proposal must be at least 50 characters long")
-    .max(5000, "Proposal must be less than 5000 characters")
+    .min(20, "Cover letter must be at least 20 characters long")
+    .max(2000, "Cover letter must be less than 2000 characters")
     .optional(),
   estimatedDuration: z
     .number()

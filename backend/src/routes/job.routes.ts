@@ -18,7 +18,10 @@ import {
   generateJobCacheKey,
   generateJobOnChainStatusCacheKey,
 } from "../lib/cache";
-import { ContractService } from "../services/contract.service";
+import {
+  ContractService,
+  RevisionProposalView,
+} from "../services/contract.service";
 
 const router = Router();
 /**
@@ -269,6 +272,7 @@ router.get(
 
     // Fetch on-chain escrow status if contractJobId is present
     let escrowStatus = job.escrowStatus as string;
+    let revisionProposal: RevisionProposalView | null = null;
 
     if (job.contractJobId) {
       try {
@@ -283,12 +287,20 @@ router.get(
           error,
         );
       }
+
+      try {
+        const p = await ContractService.getRevisionProposal(job.contractJobId);
+        revisionProposal = p && p.status === "PENDING" ? p : null;
+      } catch (error) {
+        console.warn(`Could not fetch revision proposal for job ${id}:`, error);
+      }
     }
 
     res.json({
       ...job,
       escrow_status: escrowStatus, // Alias for frontend compatibility
       escrowStatus: escrowStatus, // Keep original for consistency
+      revisionProposal,
     });
   }),
 );

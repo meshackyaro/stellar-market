@@ -155,24 +155,27 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           };
         }
 
-        // Poll for success
-        let statusResponse = await server.getTransaction(sendResponse.hash);
+        // Poll for confirmation
+        let statusResponse;
         let attempts = 0;
-        while (
-          statusResponse.status === rpc.Api.GetTransactionStatus.NOT_FOUND ||
-          statusResponse.status === rpc.Api.GetTransactionStatus.SUCCESS
-        ) {
+        while (attempts <= 10) {
+          statusResponse = await server.getTransaction(sendResponse.hash);
+
           if (statusResponse.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+            return { success: true, hash: sendResponse.hash };
+          }
+
+          if (statusResponse.status === rpc.Api.GetTransactionStatus.FAILED) {
             return {
-              success: true,
+              success: false,
               hash: sendResponse.hash,
+              error: "Transaction failed on-chain",
             };
           }
-          
-          if (attempts > 10) break;
+
+          // NOT_FOUND = still pending, keep polling
           attempts++;
           await new Promise((resolve) => setTimeout(resolve, 2000));
-          statusResponse = await server.getTransaction(sendResponse.hash);
         }
 
         return {

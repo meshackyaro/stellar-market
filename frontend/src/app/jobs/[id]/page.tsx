@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams } from "next/navigation";
 import {
   Clock,
@@ -13,6 +13,7 @@ import {
   CheckCircle,
   UserCheck,
   XCircle,
+  PencilLine,
 } from "lucide-react";
 import Link from "next/link";
 import axios from "axios";
@@ -22,9 +23,23 @@ import StatusBadge from "@/components/StatusBadge";
 import ApplyModal from "@/components/ApplyModal";
 import RaiseDisputeModal from "@/components/RaiseDisputeModal";
 import ReviewModal from "@/components/ReviewModal";
+import ProposeRevisionModal, {
+  type ProposeRevisionMilestoneInput,
+} from "@/components/ProposeRevisionModal";
 import { Job, Application, PaginatedResponse } from "@/types";
+import ProposeRevisionModal, {
+  type ProposeRevisionMilestoneInput,
+} from "@/components/ProposeRevisionModal";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+
+function stroopsToXlm(stroops: string): number {
+  try {
+    return Number(BigInt(stroops || "0")) / 10_000_000;
+  } catch {
+    return 0;
+  }
+}
 
 export default function JobDetailPage() {
   const { id } = useParams();
@@ -50,6 +65,7 @@ export default function JobDetailPage() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [loadingApps, setLoadingApps] = useState(false);
   const [actioningApp, setActioningApp] = useState<string | null>(null);
+  const [proposeRevisionOpen, setProposeRevisionOpen] = useState(false);
 
   const fetchJob = useCallback(async () => {
     try {
@@ -254,6 +270,68 @@ export default function JobDetailPage() {
     }
   };
 
+  const handleRevisionEscrow = async (
+    action: "propose" | "accept" | "reject",
+    milestones?: ProposeRevisionMilestoneInput[],
+  ) => {
+    setError(null);
+    setProcessing(true);
+    try {
+      const token = localStorage.getItem("token");
+      let endpoint = "";
+      let type = "";
+      const payload: Record<string, unknown> = { jobId: id };
+
+      if (action === "propose") {
+        endpoint = "/escrow/init-propose-revision";
+        type = "PROPOSE_REVISION";
+        payload.milestones = milestones;
+      } else if (action === "accept") {
+        endpoint = "/escrow/init-accept-revision";
+        type = "ACCEPT_REVISION";
+      } else {
+        endpoint = "/escrow/init-reject-revision";
+        type = "REJECT_REVISION";
+      }
+
+      const res = await axios.post(`${API_URL}${endpoint}`, payload, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const txResult = await signAndBroadcastTransaction(res.data.xdr);
+      if (!txResult.success) {
+        throw new Error(txResult.error || "Transaction failed");
+      }
+
+      await axios.post(
+        `${API_URL}/escrow/confirm-tx`,
+        { hash: txResult.hash, type, jobId: id },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      setProposeRevisionOpen(false);
+      await fetchJob();
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Revision transaction failed.",
+      );
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const revisionInitialMilestones =
+    useMemo((): ProposeRevisionMilestoneInput[] => {
+      if (!job?.milestones?.length) return [];
+      return job.milestones.map((m) => ({
+        title: m.title,
+        amount: m.amount,
+        deadline: m.contractDeadline
+          ? new Date(m.contractDeadline).toISOString()
+          : new Date(job.deadline).toISOString(),
+      }));
+    }, [job]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[60vh]">
@@ -279,6 +357,30 @@ export default function JobDetailPage() {
   const isOwnJob = user?.id === job.client.id || isClient;
   const isOwner = user?.id === job.client.id;
   const isFreelancer = user?.role === "FREELANCER";
+  const isPartyOnJob = Boolean(
+    user &&
+    address &&
+    ((user.id === job.client.id && address === job.client.walletAddress) ||
+      (job.freelancer &&
+        user.id === job.freelancer.id &&
+        address === job.freelancer.walletAddress)),
+  );
+  const pendingRevision = job.revisionProposal ?? null;
+  const canRespondToRevision = Boolean(
+    pendingRevision &&
+    address &&
+    pendingRevision.proposer !== address &&
+    isPartyOnJob,
+  );
+  const isRevisionProposer = Boolean(
+    pendingRevision && address && pendingRevision.proposer === address,
+  );
+  const showProposeRevisionCta =
+    job.status === "IN_PROGRESS" &&
+    job.escrowStatus === "FUNDED" &&
+    job.contractJobId &&
+    isPartyOnJob &&
+    !pendingRevision;
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -321,6 +423,78 @@ export default function JobDetailPage() {
               {job.description}
             </div>
           </div>
+
+          {pendingRevision && canRespondToRevision && (
+            <div className="card mb-8 border-amber-500/40 bg-amber-500/5">
+              <h2 className="text-lg font-semibold text-theme-heading mb-2">
+                Pending revision proposal
+              </h2>
+              <p className="text-sm text-theme-text mb-3">
+                The other party proposed new milestones and a budget of{" "}
+                <span className="font-semibold text-stellar-blue">
+                  {stroopsToXlm(
+                    pendingRevision.newTotalStroops,
+                  ).toLocaleString()}{" "}
+                  XLM
+                </span>
+                . Review the milestones below, then accept or reject on-chain.
+              </p>
+              <ul className="space-y-2 mb-4 text-sm text-theme-text">
+                {pendingRevision.milestones.map((m, i) => (
+                  <li
+                    key={`${m.id}-${i}`}
+                    className="p-3 rounded-lg bg-theme-bg border border-theme-border"
+                  >
+                    <div className="font-medium text-theme-heading">
+                      {m.description || `Milestone ${i + 1}`}
+                    </div>
+                    <div className="text-xs mt-1">
+                      {stroopsToXlm(m.amountStroops).toLocaleString()} XLM · due{" "}
+                      {new Date(m.deadline * 1000).toLocaleDateString()}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={processing}
+                  onClick={() => void handleRevisionEscrow("accept")}
+                  className="btn-primary py-2 px-4 text-sm flex items-center gap-2"
+                >
+                  {processing ? (
+                    <Loader2 className="animate-spin" size={16} />
+                  ) : (
+                    <CheckCircle size={16} />
+                  )}
+                  Accept revision
+                </button>
+                <button
+                  type="button"
+                  disabled={processing}
+                  onClick={() => void handleRevisionEscrow("reject")}
+                  className="btn-secondary py-2 px-4 text-sm border-theme-error text-theme-error hover:bg-theme-error/10 flex items-center gap-2"
+                >
+                  {processing ? (
+                    <Loader2 className="animate-spin" size={16} />
+                  ) : (
+                    <XCircle size={16} />
+                  )}
+                  Reject
+                </button>
+              </div>
+            </div>
+          )}
+
+          {pendingRevision && isRevisionProposer && (
+            <div className="card mb-8 border-stellar-blue/30 bg-stellar-blue/5">
+              <p className="text-sm text-theme-text">
+                You have a pending revision proposal. The other party must
+                accept or reject it before escrow can move forward with the new
+                scope.
+              </p>
+            </div>
+          )}
 
           {/* Milestones */}
           <div className="card">
@@ -619,6 +793,19 @@ export default function JobDetailPage() {
                 </button>
               )}
 
+            {/* Propose Revision button */}
+            {showProposeRevisionCta && (
+              <button
+                type="button"
+                disabled={processing}
+                onClick={() => setProposeRevisionOpen(true)}
+                className="btn-secondary w-full flex items-center justify-center gap-2 mb-4 border-stellar-purple text-stellar-purple hover:bg-stellar-purple/10"
+              >
+                <PencilLine size={18} />
+                Propose revision
+              </button>
+            )}
+
             {/* Raise Dispute button - only if escrow is funded */}
             {isOwnJob &&
               job.status === "IN_PROGRESS" &&
@@ -702,6 +889,18 @@ export default function JobDetailPage() {
           onSuccess={() => {
             setReviewModalOpen(false);
             fetchJob();
+          }}
+        />
+      )}
+
+      {showProposeRevisionCta && (
+        <ProposeRevisionModal
+          isOpen={proposeRevisionOpen}
+          onClose={() => setProposeRevisionOpen(false)}
+          initialRows={revisionInitialMilestones}
+          processing={processing}
+          onSubmit={async (milestones) => {
+            await handleRevisionEscrow("propose", milestones);
           }}
         />
       )}
