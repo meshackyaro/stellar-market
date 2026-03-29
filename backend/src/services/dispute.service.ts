@@ -2,7 +2,12 @@
  * Dispute Management Service
  * Handles dispute creation, voting, resolution, and webhook processing
  */
-import { PrismaClient, DisputeStatus, JobStatus, EscrowStatus } from "@prisma/client";
+import {
+  PrismaClient,
+  DisputeStatus,
+  JobStatus,
+  EscrowStatus,
+} from "@prisma/client";
 import { createError } from "../middleware/error";
 
 const prisma = new PrismaClient();
@@ -38,11 +43,19 @@ export class DisputeService {
       throw createError("Not a participant of this job", 403);
     }
 
-    // Verify the job is in a disputable state (ACTIVE/IN_PROGRESS or FUNDED)
-    const isDisputableStatus = job.status === JobStatus.IN_PROGRESS;
-    const isDisputableEscrow = job.escrowStatus === EscrowStatus.FUNDED;
+    // CRITICAL: Verify escrow is funded before allowing dispute
+    if (job.escrowStatus !== EscrowStatus.FUNDED) {
+      throw createError(
+        "Escrow must be funded before a dispute can be raised. Current status: " +
+          job.escrowStatus,
+        400,
+      );
+    }
 
-    if (!isDisputableStatus && !isDisputableEscrow) {
+    // Verify the job is in a disputable state (ACTIVE/IN_PROGRESS)
+    const isDisputableStatus = job.status === JobStatus.IN_PROGRESS;
+
+    if (!isDisputableStatus) {
       throw createError("Job is not in a disputable state", 400);
     }
 
@@ -104,6 +117,118 @@ export class DisputeService {
     });
 
     return dispute;
+  }
+
+  /**
+   * Initialize dispute creation (returns XDR for signing)
+   */
+  static async initRaiseDispute(
+    jobId: string,
+    initiatorId: string,
+    reason: string,
+    minVotes: number = 3,
+  ) {
+    // Validate job exists and has both client and freelancer
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { client: true, freelancer: true },
+    });
+
+    if (!job) {
+      throw createError("Job not found", 404);
+    }
+
+    if (!job.freelancer) {
+      throw createError(
+        "Job must have an assigned freelancer to raise a dispute",
+        400,
+      );
+    }
+
+    // Verify initiator is a participant
+    if (job.clientId !== initiatorId && job.freelancerId !== initiatorId) {
+      throw createError("Not a participant of this job", 403);
+    }
+
+    // CRITICAL: Verify escrow is funded before allowing dispute
+    if (job.escrowStatus !== EscrowStatus.FUNDED) {
+      throw createError(
+        "Escrow must be funded before a dispute can be raised. Current status: " +
+          job.escrowStatus,
+        400,
+      );
+    }
+
+    // Verify the job is in a disputable state
+    if (job.status !== JobStatus.IN_PROGRESS) {
+      throw createError("Job is not in a disputable state", 400);
+    }
+
+    // Check for existing dispute
+    const existingDispute = await prisma.dispute.findUnique({
+      where: { jobId },
+    });
+
+    if (existingDispute) {
+      throw createError("A dispute already exists for this job", 400);
+    }
+
+    // Determine respondent
+    const respondentId =
+      initiatorId === job.clientId ? job.freelancerId! : job.clientId;
+
+    // In a real implementation, this would call ContractService to generate XDR
+    // For now, return mock data
+    return {
+      xdr: "mock_xdr_for_raise_dispute",
+      respondentId,
+      jobId,
+      reason,
+      minVotes,
+    };
+  }
+
+  /**
+   * Confirm dispute transaction after blockchain confirmation
+   */
+  static async confirmDisputeTransaction(
+    hash: string,
+    type: string,
+    jobId: string,
+    onChainDisputeId: string,
+    respondentId: string,
+    reason: string,
+    initiatorId: string,
+  ) {
+    if (type !== "RAISE_DISPUTE") {
+      throw createError("Invalid transaction type", 400);
+    }
+
+    // Create dispute in database
+    const dispute = await this.createDispute(jobId, initiatorId, reason);
+
+    // Update with on-chain ID
+    const updated = await prisma.dispute.update({
+      where: { id: dispute.id },
+      data: { onChainDisputeId },
+      include: {
+        job: true,
+        client: { select: { id: true, username: true } },
+        freelancer: { select: { id: true, username: true } },
+      },
+    });
+
+    // Send notifications
+    const { NotificationService } = await import("./notification.service");
+    await NotificationService.sendNotification({
+      userId: respondentId,
+      type: "DISPUTE_RAISED",
+      title: "Dispute Raised",
+      message: `A dispute has been raised for job "${updated.job.title}"`,
+      metadata: { disputeId: updated.id, jobId },
+    });
+
+    return updated;
   }
 
   /**
