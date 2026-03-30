@@ -69,3 +69,10 @@ export const getJobByIdParamSchema = z.object({
 export const updateJobStatusSchema = z.object({
   status: jobStatusSchema,
 });
+
+export const getSavedJobsQuerySchema = paginationSchema.extend({
+  search: z.string().optional(),
+  skill: z.string().optional(),
+  minBudget: z.coerce.number().positive().optional(),
+  maxBudget: z.coerce.number().positive().optional(),
+});

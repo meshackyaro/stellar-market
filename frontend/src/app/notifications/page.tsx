@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { Bell, CheckSquare, Trash2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
@@ -18,6 +18,11 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true);
   const [markingAll, setMarkingAll] = useState(false);
   const limit = 10;
+
+  // Track which notification IDs have already been queued for marking as read
+  const markedRef = useRef<Set<string>>(new Set());
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const fetchNotifications = useCallback(
     async (p: number) => {
@@ -45,23 +50,82 @@ export default function NotificationsPage() {
     fetchNotifications(page);
   }, [page, token, fetchNotifications]);
 
-  const markAsRead = async (notification: Notification) => {
-    if (notification.read || !token) return;
-    try {
-      await axios.put(
-        `${API}/notifications/${notification.id}/read`,
-        {},
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === notification.id ? { ...n, read: true } : n)),
-      );
-    } catch (error) {
-      console.error("Failed to mark as read:", error);
-    }
-  };
+  // Reset marked set when page changes
+  useEffect(() => {
+    markedRef.current.clear();
+  }, [page]);
+
+  const markAsRead = useCallback(
+    async (notification: Notification) => {
+      if (notification.read || !token) return;
+      if (markedRef.current.has(notification.id)) return;
+      markedRef.current.add(notification.id);
+
+      try {
+        await axios.put(
+          `${API}/notifications/${notification.id}/read`,
+          {},
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        );
+        setNotifications((prev) =>
+          prev.map((n) =>
+            n.id === notification.id ? { ...n, read: true } : n,
+          ),
+        );
+      } catch (error) {
+        // Allow retry on failure
+        markedRef.current.delete(notification.id);
+        console.error("Failed to mark as read:", error);
+      }
+    },
+    [token],
+  );
+
+  // IntersectionObserver: mark notifications as read when they scroll into view
+  useEffect(() => {
+    if (loading || !notifications.length) return;
+
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const notificationId = (entry.target as HTMLElement).dataset
+              .notificationId;
+            if (notificationId) {
+              const notification = notifications.find(
+                (n) => n.id === notificationId,
+              );
+              if (notification && !notification.read) {
+                markAsRead(notification);
+              }
+            }
+          }
+        });
+      },
+      { threshold: 0.5 },
+    );
+
+    rowRefs.current.forEach((el) => {
+      observerRef.current?.observe(el);
+    });
+
+    return () => {
+      observerRef.current?.disconnect();
+    };
+  }, [loading, notifications, markAsRead]);
+
+  const setRowRef = useCallback(
+    (id: string) => (el: HTMLDivElement | null) => {
+      if (el) {
+        rowRefs.current.set(id, el);
+      } else {
+        rowRefs.current.delete(id);
+      }
+    },
+    [],
+  );
 
   const markAllAsRead = async () => {
     if (!token) return;
@@ -164,13 +228,18 @@ export default function NotificationsPage() {
           <>
             <div className="divide-y divide-theme-border">
               {notifications.map((notification) => (
-                <NotificationItem
+                <div
                   key={notification.id}
-                  notification={notification}
-                  onClick={markAsRead}
-                  onDelete={(n) => deleteNotification(n.id)}
-                  className="py-6 px-6"
-                />
+                  ref={setRowRef(notification.id)}
+                  data-notification-id={notification.id}
+                >
+                  <NotificationItem
+                    notification={notification}
+                    onClick={markAsRead}
+                    onDelete={(n) => deleteNotification(n.id)}
+                    className="py-6 px-6"
+                  />
+                </div>
               ))}
             </div>
 

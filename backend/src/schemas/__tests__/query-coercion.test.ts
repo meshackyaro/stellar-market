@@ -7,6 +7,7 @@ import {
   getMilestonesQuerySchema,
   getMessagesQuerySchema,
   getRecommendationsQuerySchema,
+  freelancerSearchQuerySchema,
 } from "../index";
 import { paginationSchema } from "../common";
 import { createReviewSchema } from "../review";
@@ -147,6 +148,40 @@ describe("Query parameter coercion (string → number)", () => {
       expect(result.page).toBe(1);
       expect(result.limit).toBe(10);
     });
+  });
+});
+
+describe("freelancerSearchQuerySchema", () => {
+  it("defaults page to 1 and limit to 12", () => {
+    const result = freelancerSearchQuerySchema.parse({});
+    expect(result.page).toBe(1);
+    expect(result.limit).toBe(12);
+  });
+
+  it("normalizes skills[] into skills", () => {
+    const result = freelancerSearchQuerySchema.parse({
+      "skills[]": ["Rust", "React"],
+    });
+    expect(result.skills).toEqual(["Rust", "React"]);
+  });
+
+  it("coerces page, limit, minRating and available from strings", () => {
+    const result = freelancerSearchQuerySchema.parse({
+      page: "2",
+      limit: "5",
+      minRating: "4",
+      available: "true",
+    });
+    expect(result.page).toBe(2);
+    expect(result.limit).toBe(5);
+    expect(result.minRating).toBe(4);
+    expect(result.available).toBe(true);
+  });
+
+  it("rejects minRating above 5", () => {
+    expect(() =>
+      freelancerSearchQuerySchema.parse({ minRating: "6" }),
+    ).toThrow();
   });
 });
 

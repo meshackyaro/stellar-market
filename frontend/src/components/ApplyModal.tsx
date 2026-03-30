@@ -20,7 +20,8 @@ const TIMELINE_OPTIONS = [
   { label: "Custom", days: 0 },
 ];
 
-const MIN_PROPOSAL_LENGTH = 200;
+const MIN_PROPOSAL_LENGTH = 20;
+const MAX_PROPOSAL_LENGTH = 2000;
 
 interface ApplyModalProps {
   job: Job;
@@ -71,6 +72,8 @@ export default function ApplyModal({
       errors.proposal = "Cover letter is required.";
     } else if (plainText.length < MIN_PROPOSAL_LENGTH) {
       errors.proposal = `Cover letter must be at least ${MIN_PROPOSAL_LENGTH} characters. Currently ${plainText.length}.`;
+    } else if (plainText.length > MAX_PROPOSAL_LENGTH) {
+      errors.proposal = `Cover letter must be less than ${MAX_PROPOSAL_LENGTH} characters. Currently ${plainText.length}.`;
     }
 
     if (!bidAmount || bidAmount <= 0) {
@@ -84,6 +87,15 @@ export default function ApplyModal({
 
     setValidationErrors(errors);
     return Object.keys(errors).length === 0;
+  }, [proposal, bidAmount, getEstimatedDuration]);
+
+  const isFormValid = useCallback((): boolean => {
+    const plainText = proposal.replace(/[#*_~`>\-\[\]()!|]/g, "").trim();
+    if (!plainText || plainText.length < MIN_PROPOSAL_LENGTH || plainText.length > MAX_PROPOSAL_LENGTH) return false;
+    if (!bidAmount || bidAmount <= 0) return false;
+    const duration = getEstimatedDuration();
+    if (duration <= 0) return false;
+    return true;
   }, [proposal, bidAmount, getEstimatedDuration]);
 
   const handleSubmit = async () => {
@@ -172,13 +184,13 @@ export default function ApplyModal({
                 </span>
               ) : (
                 <span className="text-xs text-dark-text">
-                  Minimum {MIN_PROPOSAL_LENGTH} characters
+                  {MIN_PROPOSAL_LENGTH}–{MAX_PROPOSAL_LENGTH} characters
                 </span>
               )}
               <span
                 className={`text-xs ${
-                  plainTextLength < MIN_PROPOSAL_LENGTH
-                    ? "text-dark-text"
+                  plainTextLength < MIN_PROPOSAL_LENGTH || plainTextLength > MAX_PROPOSAL_LENGTH
+                    ? "text-red-400"
                     : "text-green-400"
                 }`}
               >
@@ -260,7 +272,7 @@ export default function ApplyModal({
           <button
             onClick={handleSubmit}
             className="btn-primary flex-1 flex items-center justify-center gap-2"
-            disabled={submitting}
+            disabled={submitting || !isFormValid()}
           >
             {submitting && <Loader2 size={16} className="animate-spin" />}
             {submitting ? "Submitting..." : "Submit Application"}

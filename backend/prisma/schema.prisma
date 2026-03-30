@@ -93,23 +93,24 @@ model User {
   averageRating          Float     @default(0)
   reviewCount            Int       @default(0)
 
-  clientJobs        Job[]          @relation("ClientJobs")
-  freelancerJobs    Job[]          @relation("FreelancerJobs")
-  applications      Application[]
-  sentMessages      Message[]      @relation("SentMessages")
-  receivedMessages  Message[]      @relation("ReceivedMessages")
-  reviewsGiven      Review[]       @relation("ReviewsGiven")
-  reviewsReceived   Review[]       @relation("ReviewsReceived")
-  skills            String[]
-  transactionsFrom  Transaction[]  @relation("TransactionsFrom")
-  transactionsTo    Transaction[]  @relation("TransactionsTo")
-  attachments       Attachment[]
-  notifications     Notification[]
-  auditLogs         AuditLog[]
-  initiatedDisputes Dispute[]      @relation("DisputeInitiated")
-  clientDisputes    Dispute[]      @relation("DisputeClient")
-  freelancerDisputes Dispute[]     @relation("DisputeFreelancer")
-  votesCast         DisputeVote[]  @relation("VotesCast")
+  clientJobs         Job[]          @relation("ClientJobs")
+  freelancerJobs     Job[]          @relation("FreelancerJobs")
+  applications       Application[]
+  sentMessages       Message[]      @relation("SentMessages")
+  receivedMessages   Message[]      @relation("ReceivedMessages")
+  reviewsGiven       Review[]       @relation("ReviewsGiven")
+  reviewsReceived    Review[]       @relation("ReviewsReceived")
+  skills             String[]
+  transactionsFrom   Transaction[]  @relation("TransactionsFrom")
+  transactionsTo     Transaction[]  @relation("TransactionsTo")
+  attachments        Attachment[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  initiatedDisputes  Dispute[]      @relation("DisputeInitiated")
+  clientDisputes     Dispute[]      @relation("DisputeClient")
+  freelancerDisputes Dispute[]      @relation("DisputeFreelancer")
+  votesCast          DisputeVote[]  @relation("VotesCast")
+  savedJobs          SavedJob[]     @relation("SavedJobs")
 }
 
 model Job {
@@ -141,6 +142,7 @@ model Job {
   transactions Transaction[]
   attachments  Attachment[]
   dispute      Dispute?
+  savedBy      SavedJob[]    @relation("SavedByFreelancers")
 }
 
 model Milestone {
@@ -280,25 +282,25 @@ model AuditLog {
 }
 
 model Dispute {
-  id                String        @id @default(cuid())
-  jobId             String        @unique
-  onChainDisputeId  String?       @unique
-  clientId          String
-  freelancerId      String
-  initiatorId       String
-  reason            String
-  status            DisputeStatus @default(OPEN)
-  outcome           String?
-  resolvedAt        DateTime?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  id               String        @id @default(cuid())
+  jobId            String        @unique
+  onChainDisputeId String?       @unique
+  clientId         String
+  freelancerId     String
+  initiatorId      String
+  reason           String
+  status           DisputeStatus @default(OPEN)
+  outcome          String?
+  resolvedAt       DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
-  job          Job            @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  client       User           @relation("DisputeClient", fields: [clientId], references: [id])
-  freelancer   User           @relation("DisputeFreelancer", fields: [freelancerId], references: [id])
-  initiator    User           @relation("DisputeInitiated", fields: [initiatorId], references: [id])
-  votes        DisputeVote[]
-  attachments  Attachment[]
+  job         Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  client      User          @relation("DisputeClient", fields: [clientId], references: [id])
+  freelancer  User          @relation("DisputeFreelancer", fields: [freelancerId], references: [id])
+  initiator   User          @relation("DisputeInitiated", fields: [initiatorId], references: [id])
+  votes       DisputeVote[]
+  attachments Attachment[]
 
   @@index([jobId])
   @@index([clientId])
@@ -311,7 +313,7 @@ model DisputeVote {
   id        String   @id @default(cuid())
   disputeId String
   voterId   String
-  choice    String   // "CLIENT" or "FREELANCER"
+  choice    String // "CLIENT" or "FREELANCER"
   reason    String
   createdAt DateTime @default(now())
 
@@ -321,4 +323,23 @@ model DisputeVote {
   @@unique([disputeId, voterId])
   @@index([disputeId])
   @@index([voterId])
+}
+
+model SavedJob {
+  id           String   @id @default(cuid())
+  freelancerId String
+  jobId        String
+  createdAt    DateTime @default(now())
+
+  freelancer User @relation("SavedJobs", fields: [freelancerId], references: [id], onDelete: Cascade)
+  job        Job  @relation("SavedByFreelancers", fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([freelancerId, jobId])
+  @@index([freelancerId])
+  @@index([jobId])
+}
+
+model SystemState {
+  key   String @id
+  value String
 }

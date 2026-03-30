@@ -25,7 +25,7 @@ interface WalletState {
   disconnect: () => void;
   signAndBroadcastTransaction: (
     xdr: string
-  ) => Promise<{ hash: string; success: boolean; error?: string }>;
+  ) => Promise<{ hash: string; success: boolean; error?: string; resultXdr?: string }>;
 }
 
 const WalletContext = createContext<WalletState | undefined>(undefined);
@@ -155,24 +155,32 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           };
         }
 
-        // Poll for success
-        let statusResponse = await server.getTransaction(sendResponse.hash);
+        // Poll for confirmation
+        let statusResponse;
         let attempts = 0;
-        while (
-          statusResponse.status === rpc.Api.GetTransactionStatus.NOT_FOUND ||
-          statusResponse.status === rpc.Api.GetTransactionStatus.SUCCESS
-        ) {
+        while (attempts <= 10) {
+          statusResponse = await server.getTransaction(sendResponse.hash);
+
           if (statusResponse.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+            const successResponse = statusResponse as rpc.Api.GetSuccessfulTransactionResponse;
             return {
               success: true,
               hash: sendResponse.hash,
+              resultXdr: successResponse.returnValue?.toXDR("base64"),
             };
           }
-          
-          if (attempts > 10) break;
+
+          if (statusResponse.status === rpc.Api.GetTransactionStatus.FAILED) {
+            return {
+              success: false,
+              hash: sendResponse.hash,
+              error: "Transaction failed on-chain",
+            };
+          }
+
+          // NOT_FOUND = still pending, keep polling
           attempts++;
           await new Promise((resolve) => setTimeout(resolve, 2000));
-          statusResponse = await server.getTransaction(sendResponse.hash);
         }
 
         return {

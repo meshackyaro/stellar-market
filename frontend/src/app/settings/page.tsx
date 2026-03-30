@@ -24,18 +24,21 @@ export default function SettingsPage() {
   const { toast } = useToast();
   const router = useRouter();
 
-  const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [bio, setBio] = useState("");
-  const [avatarUrl, setAvatarUrl] = useState("");
-  const [role, setRole] = useState<"CLIENT" | "FREELANCER">("FREELANCER");
-  const [skills, setSkills] = useState<string[]>([]);
+  // Seed form fields immediately from auth-context user so the form is never
+  // blank while the fresh API fetch is in-flight (or if it fails).
+  const [username, setUsername] = useState(user?.username ?? "");
+  const [email, setEmail] = useState(user?.email ?? "");
+  const [bio, setBio] = useState(user?.bio ?? "");
+  const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl ?? "");
+  const [role, setRole] = useState<"CLIENT" | "FREELANCER">(user?.role ?? "FREELANCER");
+  const [skills, setSkills] = useState<string[]>(user?.skills ?? []);
   const [newSkill, setNewSkill] = useState("");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string>("");
   const [errors, setErrors] = useState<FormErrors>({});
   const [isSaving, setIsSaving] = useState(false);
-  const [isPageLoading, setIsPageLoading] = useState(true);
+  // Only show the full-page loader when there is no cached data to show yet.
+  const [isPageLoading, setIsPageLoading] = useState(!user);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   // ─── 2FA State ──────────────────────────────────────────────────────────────
@@ -58,7 +61,8 @@ export default function SettingsPage() {
     }
   }, [authLoading, token, router]);
 
-  // Fetch latest profile data and pre-fill form
+  // Fetch the latest profile from the API and overwrite local state so any
+  // server-side changes (e.g. from another device) are reflected immediately.
   useEffect(() => {
     if (!token) return;
 
@@ -68,15 +72,20 @@ export default function SettingsPage() {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = res.data;
-        setUsername(data.username || "");
-        setEmail(data.email || "");
-        setBio(data.bio || "");
-        setAvatarUrl(data.avatarUrl || "");
-        setRole(data.role || "FREELANCER");
-        setSkills(data.skills || []);
-        setTwoFAEnabled(data.twoFactorEnabled || false);
+        // Always overwrite with fresh server values.
+        setUsername(data.username ?? "");
+        setEmail(data.email ?? "");
+        setBio(data.bio ?? "");
+        setAvatarUrl(data.avatarUrl ?? "");
+        setRole(data.role ?? "FREELANCER");
+        setSkills(data.skills ?? []);
+        setTwoFAEnabled(data.twoFactorEnabled ?? false);
       } catch {
-        toast.error("Failed to load profile data.");
+        // If the fetch fails we still have the context values pre-filled —
+        // only show an error if there was nothing pre-loaded at all.
+        if (!user) {
+          toast.error("Failed to load profile data.");
+        }
       } finally {
         setIsPageLoading(false);
       }

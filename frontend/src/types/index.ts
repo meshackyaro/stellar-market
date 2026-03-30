@@ -24,6 +24,22 @@ export interface Milestone {
   contractDeadline?: string;
 }
 
+export interface RevisionProposalMilestone {
+  id: number;
+  description: string;
+  amountStroops: string;
+  deadline: number;
+  status: string;
+}
+
+export interface RevisionProposal {
+  proposer: string;
+  status: "PENDING" | "ACCEPTED" | "REJECTED";
+  newTotalStroops: string;
+  milestones: RevisionProposalMilestone[];
+  createdAt: number;
+}
+
 export interface Job {
   id: string;
   title: string;
@@ -38,6 +54,7 @@ export interface Job {
   milestones: Milestone[];
   contractJobId?: string;
   escrowStatus: "UNFUNDED" | "FUNDED" | "COMPLETED" | "CANCELLED" | "DISPUTED";
+  revisionProposal?: RevisionProposal | null;
   createdAt: string;
   _count?: { applications: number };
 }

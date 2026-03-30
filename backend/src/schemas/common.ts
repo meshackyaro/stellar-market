@@ -53,8 +53,9 @@ export const applicationStatusSchema = z.enum([
 export const milestoneStatusSchema = z.enum([
   "PENDING",
   "IN_PROGRESS",
-  "COMPLETED",
-  "CANCELLED",
+  "SUBMITTED",
+  "APPROVED",
+  "REJECTED",
 ]);
 
 export const reviewRatingSchema = z.number().int().min(1).max(5);

@@ -5,6 +5,7 @@ import { validate } from "../middleware/validation";
 import { asyncHandler } from "../middleware/error";
 import { NotificationService } from "../services/notification.service";
 import { NotificationType } from "@prisma/client";
+import { ContractService } from "../services/contract.service";
 import {
   createMilestoneSchema,
   updateMilestoneSchema,
@@ -19,12 +20,12 @@ const prisma = new PrismaClient();
 
 // Valid status transitions per role
 const freelancerTransitions: Record<string, string[]> = {
-  PENDING: ["IN_PROGRESS", "COMPLETED"],
-  IN_PROGRESS: ["COMPLETED"],
+  PENDING: ["IN_PROGRESS"],
+  IN_PROGRESS: ["SUBMITTED"],
 };
 
 const clientTransitions: Record<string, string[]> = {
-  COMPLETED: ["CANCELLED"],
+  SUBMITTED: ["APPROVED", "REJECTED"],
 };
 
 // List milestones for a job
@@ -279,7 +280,7 @@ router.patch(
     });
 
     // Notify the client when freelancer submits milestone
-    if (isFreelancer && status === "COMPLETED") {
+    if (isFreelancer && status === "SUBMITTED") {
       await NotificationService.sendNotification({
         userId: job.clientId,
         type: NotificationType.MILESTONE_SUBMITTED,
@@ -289,24 +290,81 @@ router.patch(
       });
     }
 
-    // Auto-complete job when all milestones are completed
-    if (status === "COMPLETED") {
-      const allMilestones = await prisma.milestone.findMany({
-        where: { jobId: job.id },
-      });
+    res.json(updated);
+  }),
+);
 
-      const allCompleted = allMilestones.every(
-        (m: any) => m.status === "COMPLETED",
-      );
-      if (allCompleted) {
-        await prisma.job.update({
-          where: { id: job.id },
-          data: { status: "COMPLETED" },
-        });
-      }
+// Submit milestone (returns XDR for freelancer signing)
+router.put(
+  "/milestones/:id/submit",
+  authenticate,
+  validate({ params: getMilestoneByIdParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = req.params.id as string;
+
+    const milestone = await prisma.milestone.findUnique({
+      where: { id },
+      include: { job: { include: { freelancer: true } } },
+    });
+
+    if (!milestone || !milestone.job.contractJobId || milestone.onChainIndex === null) {
+      return res.status(404).json({ error: "On-chain milestone not found." });
     }
 
-    res.json(updated);
+    if (!milestone.job.freelancer || milestone.job.freelancerId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "Only the assigned freelancer can submit milestones." });
+    }
+
+    if (milestone.status !== "IN_PROGRESS") {
+      return res.status(400).json({ error: "Milestone must be in progress to submit." });
+    }
+
+    const xdr = await ContractService.buildSubmitMilestoneTx(
+      milestone.job.freelancer.walletAddress,
+      milestone.job.contractJobId,
+      milestone.onChainIndex,
+    );
+
+    res.json({ xdr });
+  }),
+);
+
+// Approve milestone (returns XDR for client signing)
+router.put(
+  "/milestones/:id/approve",
+  authenticate,
+  validate({ params: getMilestoneByIdParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = req.params.id as string;
+
+    const milestone = await prisma.milestone.findUnique({
+      where: { id },
+      include: { job: { include: { client: true } } },
+    });
+
+    if (!milestone || !milestone.job.contractJobId || milestone.onChainIndex === null) {
+      return res.status(404).json({ error: "On-chain milestone not found." });
+    }
+
+    if (milestone.job.clientId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "Only the client can approve milestones." });
+    }
+
+    if (milestone.status !== "SUBMITTED") {
+      return res.status(400).json({ error: "Milestone must be submitted to approve." });
+    }
+
+    const xdr = await ContractService.buildApproveMilestoneTx(
+      milestone.job.client.walletAddress,
+      milestone.job.contractJobId,
+      milestone.onChainIndex,
+    );
+
+    res.json({ xdr });
   }),
 );
 

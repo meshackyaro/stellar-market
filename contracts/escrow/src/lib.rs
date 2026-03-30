@@ -41,6 +41,9 @@ pub enum EscrowError {
     EmptyMilestonesProposed = 23,
     /// The job's stored total_amount does not equal the sum of its milestone amounts.
     InvalidAmount = 24,
+    /// A milestone is currently in progress or submitted — cancel is not allowed;
+    /// the client must open a dispute instead.
+    WorkInProgress = 25,
 }
 
 #[contracttype]
@@ -517,6 +520,9 @@ impl EscrowContract {
         if job.status != JobStatus::Funded && job.status != JobStatus::InProgress {
             return Err(EscrowError::InvalidStatus);
         }
+        if job.status == JobStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
+        }
 
         let mut milestones = job.milestones.clone();
         let milestone = milestones
@@ -569,6 +575,10 @@ impl EscrowContract {
 
         if job.client != client {
             return Err(EscrowError::Unauthorized);
+        }
+
+        if job.status == JobStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
         }
 
         let mut milestones = job.milestones.clone();
@@ -630,11 +640,19 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        // Emit event
+        // Emit milestone approved event
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("milestone")),
             (job_id, milestone_id, client),
         );
+
+        // Emit PaymentReleased event when job reaches Completed status
+        if all_approved {
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "pmt_released")),
+                (job_id, job.freelancer, freelancer_amount),
+            );
+        }
 
         Ok(())
     }
@@ -660,6 +678,10 @@ impl EscrowContract {
 
         if job.client != client {
             return Err(EscrowError::Unauthorized);
+        }
+
+        if job.status == JobStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
         }
 
         // Validate all milestone indices before making any state changes
@@ -745,10 +767,30 @@ impl EscrowContract {
             (job_id, milestone_indices, total_released),
         );
 
+        // Emit PaymentReleased event when job reaches Completed status
+        if all_approved {
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "pmt_released")),
+                (job_id, job.freelancer, total_released),
+            );
+        }
+
         Ok(total_released)
     }
 
-    /// Cancel the job and refund remaining funds to the client.
+    /// Cancel a funded job and refund the full escrowed balance back to the client.
+    ///
+    /// # Authorization
+    /// Only the client may cancel. Cancellation is only permitted when the job is in
+    /// `Funded` status **and** all milestones are still in `Pending` state — i.e. the
+    /// freelancer has not started any work yet.
+    ///
+    /// # Errors
+    /// * `Unauthorized`      — caller is not the job's client.
+    /// * `InvalidStatus`     — job is not in `Funded` state (already `Completed`,
+    ///                         `Cancelled`, `Created`, or `InProgress`).
+    /// * `WorkInProgress`    — at least one milestone is `InProgress` or `Submitted`;
+    ///                         the client must open a dispute instead.
     pub fn cancel_job(env: Env, job_id: u64, client: Address) -> Result<(), EscrowError> {
         client.require_auth();
         require_not_paused(&env)?;
@@ -760,24 +802,35 @@ impl EscrowContract {
             .ok_or(EscrowError::JobNotFound)?;
         bump_job_ttl(&env, job_id);
 
+        // Only the client may cancel their own job.
         if job.client != client {
             return Err(EscrowError::Unauthorized);
         }
-        if job.status == JobStatus::Completed || job.status == JobStatus::Cancelled {
+
+        // Cancellation is allowed while the job is Funded or InProgress.
+        if job.status != JobStatus::Funded && job.status != JobStatus::InProgress {
             return Err(EscrowError::InvalidStatus);
         }
 
-        // Calculate remaining funds (total minus already approved milestones)
+        // Guard: reject cancellation if any milestone is actively InProgress or Submitted.
+        // The client must open a dispute for in-flight work instead.
+        let work_started = job
+            .milestones
+            .iter()
+            .any(|m| m.status == MilestoneStatus::InProgress || m.status == MilestoneStatus::Submitted);
+        if work_started {
+            return Err(EscrowError::WorkInProgress);
+        }
+
+        // Refund the remaining escrowed amount (total minus already-approved milestones).
         let approved_amount: i128 = job
             .milestones
             .iter()
             .filter(|m| m.status == MilestoneStatus::Approved)
             .map(|m| m.amount)
             .sum();
-
         let refund = job.total_amount - approved_amount;
-
-        if refund > 0 && (job.status == JobStatus::Funded || job.status == JobStatus::InProgress) {
+        if refund > 0 {
             let token_client = token::Client::new(&env, &job.token);
             token_client.transfer(&env.current_contract_address(), &client, &refund);
         }
@@ -786,10 +839,10 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        // Emit event
+        // Emit JobCancelled event with job_id, client address, and refund_amount.
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("cancelled")),
-            (job_id, client),
+            (job_id, client, refund),
         );
 
         Ok(())

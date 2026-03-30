@@ -297,11 +297,15 @@ router.get(
   "/",
   validate({ query: getUsersQuerySchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const { page, limit, search, skill } = req.query as any;
+    const { page, limit, search, skill, role } = req.query as any;
 
     const skip = (page - 1) * limit;
 
     const where: any = {};
+
+    if (role) {
+      where.role = role;
+    }
 
     if (search) {
       where.OR = [
@@ -328,6 +332,10 @@ router.get(
           bio: true,
           avatarUrl: true,
           role: true,
+          skills: true,
+          availability: true,
+          averageRating: true,
+          reviewCount: true,
           createdAt: true,
         },
         orderBy: { createdAt: "desc" },

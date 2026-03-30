@@ -24,6 +24,7 @@ export const updateUserProfileSchema = z.object({
 export const getUsersQuerySchema = paginationSchema.extend({
   search: z.string().optional(),
   skill: z.string().optional(),
+  role: z.enum(["CLIENT", "FREELANCER"]).optional(),
 });
 
 export const getUserJobsQuerySchema = paginationSchema;
@@ -31,3 +32,40 @@ export const getUserJobsQuerySchema = paginationSchema;
 export const getUserByIdParamSchema = z.object({
   id: z.string().min(1, "User ID is required"),
 });
+
+/** Normalizes `skills[]` query keys from Express into `skills`. */
+function normalizeFreelancerSearchQuery(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const o = { ...(raw as Record<string, unknown>) };
+  if (o.skills === undefined && o["skills[]"] !== undefined) {
+    o.skills = o["skills[]"];
+  }
+  delete o["skills[]"];
+  return o;
+}
+
+export const freelancerSearchQuerySchema = z.preprocess(
+  normalizeFreelancerSearchQuery,
+  z.object({
+    page: z.coerce.number().int().positive().default(1),
+    limit: z.coerce.number().int().positive().max(100).default(12),
+    minRating: z.coerce.number().min(0).max(5).optional(),
+    available: z
+      .preprocess((v) => {
+        if (v === undefined || v === null || v === "") return undefined;
+        if (typeof v === "boolean") return v;
+        const s = String(v).toLowerCase();
+        if (s === "true" || s === "1") return true;
+        if (s === "false" || s === "0") return false;
+        return undefined;
+      }, z.boolean().optional()),
+    q: z.string().optional(),
+    skills: z
+      .preprocess((v) => {
+        if (v === undefined || v === null || v === "") return undefined;
+        const arr = Array.isArray(v) ? v : [v];
+        const out = arr.map((x) => String(x).trim()).filter(Boolean);
+        return out.length ? out : undefined;
+      }, z.array(z.string()).optional()),
+  })
+);

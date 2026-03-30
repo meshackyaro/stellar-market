@@ -10,6 +10,8 @@ import {
   ShieldCheck,
   Calendar,
   Edit,
+  Award,
+  Info,
 } from "lucide-react";
 import axios from "axios";
 import { UserProfile } from "@/types";
@@ -17,18 +19,23 @@ import Skeleton from "@/components/Skeleton";
 import Link from "next/link";
 import Image from "next/image";
 import { useAuth } from "@/context/AuthContext";
+import { ContractService, ReputationResult } from "@/services/ContractService";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
 export default function ProfilePage() {
   const { id } = useParams();
   const { user: currentUser } = useAuth();
+
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<
     "reviews" | "clientJobs" | "freelancerJobs"
   >("reviews");
+
+  const [reputationLoading, setReputationLoading] = useState(false);
+  const [reputation, setReputation] = useState<ReputationResult | null>(null);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -48,6 +55,28 @@ export default function ProfilePage() {
       fetchProfile();
     }
   }, [id]);
+
+  useEffect(() => {
+    const fetchReputation = async () => {
+      if (!profile?.walletAddress) {
+        setReputation(null);
+        return;
+      }
+
+      try {
+        setReputationLoading(true);
+        const result = await ContractService.getReputation(profile.walletAddress);
+        setReputation(result);
+      } catch (err) {
+        console.error("Fetch reputation error:", err);
+        setReputation(null);
+      } finally {
+        setReputationLoading(false);
+      }
+    };
+
+    fetchReputation();
+  }, [profile?.walletAddress]);
 
   const isOwnProfile = currentUser && profile && currentUser.id === profile.id;
 
@@ -118,7 +147,6 @@ export default function ProfilePage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-      {/* Profile Header */}
       <div className="flex flex-col md:flex-row gap-8 items-start mb-12">
         <div className="w-32 h-32 rounded-full bg-gradient-to-br from-stellar-blue to-stellar-purple flex-shrink-0 flex items-center justify-center text-4xl overflow-hidden border-4 border-theme-card shadow-xl">
           {profile.avatarUrl ? (
@@ -134,6 +162,7 @@ export default function ProfilePage() {
             <User size={64} className="text-white/50" />
           )}
         </div>
+
         <div className="flex-1">
           <div className="flex flex-wrap items-center gap-4 mb-4">
             <h1 className="text-4xl font-bold text-theme-heading">
@@ -152,11 +181,11 @@ export default function ProfilePage() {
               </Link>
             )}
           </div>
+
           <p className="text-lg text-theme-text mb-4 max-w-2xl">
             {profile.bio || "No bio yet"}
           </p>
 
-          {/* Skills */}
           {profile.skills && profile.skills.length > 0 ? (
             <div className="mb-6">
               <h3 className="text-sm font-semibold text-theme-heading mb-2">Skills</h3>
@@ -184,7 +213,11 @@ export default function ProfilePage() {
             </div>
             <div className="flex items-center gap-2">
               <Calendar size={18} className="text-stellar-blue" />
-              Member since {new Date(profile.createdAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}
+              Member since{" "}
+              {new Date(profile.createdAt).toLocaleDateString("en-US", {
+                month: "short",
+                year: "numeric",
+              })}
             </div>
             <div className="flex items-center gap-2">
               {renderStars(profile.averageRating)}
@@ -192,14 +225,64 @@ export default function ProfilePage() {
                 {profile.averageRating.toFixed(1)}/5
               </span>
               <span>&middot;</span>
-              <span>{profile.reviewCount} {profile.reviewCount === 1 ? 'review' : 'reviews'}</span>
+              <span>
+                {profile.reviewCount}{" "}
+                {profile.reviewCount === 1 ? "review" : "reviews"}
+              </span>
             </div>
+          </div>
+
+          <div className="mt-6 card">
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-theme-heading">
+                  On-chain Reputation
+                </h3>
+                <div
+                  className="inline-flex items-center gap-1 text-sm text-theme-text mt-1"
+                  title="Calculated from Soroban contract review data using weighted on-chain reputation."
+                >
+                  <Info size={14} />
+                  <span>How score is calculated</span>
+                </div>
+              </div>
+
+              {!reputationLoading && reputation && (
+                <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-stellar-purple/20 bg-stellar-purple/10 text-stellar-purple text-sm font-medium">
+                  <Award size={14} />
+                  {reputation.badgeTier}
+                </span>
+              )}
+            </div>
+
+            {!profile.walletAddress ? (
+              <p className="text-theme-text text-sm">No on-chain score yet</p>
+            ) : reputationLoading ? (
+              <div className="space-y-3">
+                <Skeleton className="h-8 w-28" />
+                <Skeleton className="h-4 w-40" />
+              </div>
+            ) : reputation ? (
+              <div>
+                <div className="flex items-center gap-2">
+                  <Star className="text-yellow-400 fill-yellow-400" size={20} />
+                  <span className="text-2xl font-bold text-theme-heading">
+                    {reputation.score.toFixed(1)} / 5
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-theme-text">
+                  Based on {reputation.reviewCount} on-chain{" "}
+                  {reputation.reviewCount === 1 ? "review" : "reviews"}.
+                </p>
+              </div>
+            ) : (
+              <p className="text-theme-text text-sm">No on-chain score yet</p>
+            )}
           </div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
-        {/* Sidebar / Stats */}
         <div className="space-y-6">
           <div className="card">
             <h3 className="text-lg font-semibold text-theme-heading mb-4">
@@ -219,7 +302,9 @@ export default function ProfilePage() {
                 <span className="text-theme-text flex items-center gap-2">
                   <Star size={18} className="text-yellow-400" /> Reputation
                 </span>
-                <span className="text-theme-heading font-bold">Excellent</span>
+                <span className="text-theme-heading font-bold">
+                  {reputation ? reputation.badgeTier : "No score yet"}
+                </span>
               </div>
             </div>
           </div>
@@ -241,15 +326,15 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Main Tabs */}
         <div className="lg:col-span-2">
           <div className="flex gap-8 mb-8 border-b border-theme-border overflow-x-auto pb-px">
             <button
               onClick={() => setActiveTab("reviews")}
-              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${activeTab === "reviews"
-                ? "text-stellar-blue"
-                : "text-theme-text hover:text-theme-heading"
-                }`}
+              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${
+                activeTab === "reviews"
+                  ? "text-stellar-blue"
+                  : "text-theme-text hover:text-theme-heading"
+              }`}
             >
               Reviews ({profile.reviewCount})
               {activeTab === "reviews" && (
@@ -258,10 +343,11 @@ export default function ProfilePage() {
             </button>
             <button
               onClick={() => setActiveTab("freelancerJobs")}
-              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${activeTab === "freelancerJobs"
-                ? "text-stellar-blue"
-                : "text-theme-text hover:text-theme-heading"
-                }`}
+              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${
+                activeTab === "freelancerJobs"
+                  ? "text-stellar-blue"
+                  : "text-theme-text hover:text-theme-heading"
+              }`}
             >
               Completed as Freelancer ({profile.freelancerJobs.length})
               {activeTab === "freelancerJobs" && (
@@ -270,10 +356,11 @@ export default function ProfilePage() {
             </button>
             <button
               onClick={() => setActiveTab("clientJobs")}
-              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${activeTab === "clientJobs"
-                ? "text-stellar-blue"
-                : "text-theme-text hover:text-theme-heading"
-                }`}
+              className={`pb-4 transition-all relative font-medium whitespace-nowrap ${
+                activeTab === "clientJobs"
+                  ? "text-stellar-blue"
+                  : "text-theme-text hover:text-theme-heading"
+              }`}
             >
               Completed as Client ({profile.clientJobs.length})
               {activeTab === "clientJobs" && (
@@ -282,7 +369,6 @@ export default function ProfilePage() {
             </button>
           </div>
 
-          {/* Tab Content */}
           <div className="space-y-6">
             {activeTab === "reviews" &&
               (profile.reviewsReceived.length > 0 ? (

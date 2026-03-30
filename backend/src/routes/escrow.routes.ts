@@ -5,6 +5,11 @@ import { asyncHandler } from "../middleware/error";
 import { ContractService } from "../services/contract.service";
 import { NotificationService } from "../services/notification.service";
 import { config } from "../config";
+import {
+  invalidateCacheKey,
+  generateJobCacheKey,
+  generateJobOnChainStatusCacheKey,
+} from "../lib/cache";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -45,6 +50,33 @@ router.post("/init-create", authenticate, asyncHandler(async (req: AuthRequest, 
       deadline: Math.floor((m.contractDeadline?.getTime() || (Date.now() + 86400000 * 7)) / 1000)
     })),
     Math.floor(job.deadline.getTime() / 1000)
+  );
+
+  res.json({ xdr });
+}));
+
+/**
+ * Request XDR to submit a milestone on-chain.
+ */
+router.post("/init-submit", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
+  const { milestoneId } = req.body;
+  const milestone = await prisma.milestone.findUnique({
+    where: { id: milestoneId },
+    include: { job: { include: { freelancer: true } } },
+  });
+
+  if (!milestone || !milestone.job.contractJobId || milestone.onChainIndex === null) {
+    return res.status(404).json({ error: "On-chain milestone not found." });
+  }
+
+  if (!milestone.job.freelancer || milestone.job.freelancerId !== req.userId) {
+    return res.status(403).json({ error: "Only the assigned freelancer can submit milestones." });
+  }
+
+  const xdr = await ContractService.buildSubmitMilestoneTx(
+    milestone.job.freelancer.walletAddress,
+    milestone.job.contractJobId,
+    milestone.onChainIndex,
   );
 
   res.json({ xdr });
@@ -122,6 +154,160 @@ router.post("/init-extend-deadline", authenticate, asyncHandler(async (req: Auth
   res.json({ xdr });
 }));
 
+router.post(
+  "/init-propose-revision",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { jobId, milestones } = req.body as {
+      jobId?: string;
+      milestones?: Array<{
+        title?: string;
+        description?: string;
+        amount?: number;
+        deadline?: string;
+      }>;
+    };
+
+    if (!jobId || !Array.isArray(milestones) || milestones.length === 0) {
+      return res.status(400).json({
+        error: "jobId and a non-empty milestones array are required.",
+      });
+    }
+
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { client: true, freelancer: true },
+    });
+
+    if (!job?.contractJobId || !job.freelancer) {
+      return res.status(404).json({
+        error: "Job must have an assigned freelancer and on-chain escrow.",
+      });
+    }
+
+    if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+      return res.status(403).json({ error: "Only the client or freelancer may propose a revision." });
+    }
+
+    if (job.status !== "IN_PROGRESS" || job.escrowStatus !== "FUNDED") {
+      return res.status(400).json({
+        error: "Revisions are only available for in-progress jobs with funded escrow.",
+      });
+    }
+
+    for (const m of milestones) {
+      const amt = m.amount;
+      if (typeof amt !== "number" || !Number.isFinite(amt) || amt <= 0) {
+        return res.status(400).json({ error: "Each milestone must have a positive amount." });
+      }
+      if (!m.deadline) {
+        return res.status(400).json({ error: "Each milestone must have a deadline." });
+      }
+    }
+
+    const callerWallet =
+      job.clientId === req.userId
+        ? job.client.walletAddress
+        : job.freelancer!.walletAddress;
+
+    const payload: { description: string; amount: number; deadlineUnix: number }[] = [];
+    for (const m of milestones) {
+      const text = (m.title || m.description || "").trim();
+      if (!text) {
+        return res.status(400).json({
+          error: "Each milestone must have a title or description.",
+        });
+      }
+      const deadlineUnix = Math.floor(new Date(m.deadline!).getTime() / 1000);
+      if (!Number.isFinite(deadlineUnix) || deadlineUnix <= 0) {
+        return res.status(400).json({ error: "Invalid milestone deadline." });
+      }
+      payload.push({
+        description: text,
+        amount: m.amount!,
+        deadlineUnix,
+      });
+    }
+
+    const xdr = await ContractService.buildProposeRevisionTx(
+      callerWallet,
+      job.contractJobId,
+      payload
+    );
+    res.json({ xdr });
+  })
+);
+
+router.post(
+  "/init-accept-revision",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { jobId } = req.body as { jobId?: string };
+    if (!jobId) {
+      return res.status(400).json({ error: "jobId is required." });
+    }
+
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { client: true, freelancer: true },
+    });
+
+    if (!job?.contractJobId || !job.freelancer) {
+      return res.status(404).json({ error: "On-chain job not found." });
+    }
+
+    if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+      return res.status(403).json({ error: "Only the client or freelancer may respond." });
+    }
+
+    const callerWallet =
+      job.clientId === req.userId
+        ? job.client.walletAddress
+        : job.freelancer!.walletAddress;
+
+    const xdr = await ContractService.buildAcceptRevisionTx(
+      callerWallet,
+      job.contractJobId
+    );
+    res.json({ xdr });
+  })
+);
+
+router.post(
+  "/init-reject-revision",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { jobId } = req.body as { jobId?: string };
+    if (!jobId) {
+      return res.status(400).json({ error: "jobId is required." });
+    }
+
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      include: { client: true, freelancer: true },
+    });
+
+    if (!job?.contractJobId || !job.freelancer) {
+      return res.status(404).json({ error: "On-chain job not found." });
+    }
+
+    if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+      return res.status(403).json({ error: "Only the client or freelancer may respond." });
+    }
+
+    const callerWallet =
+      job.clientId === req.userId
+        ? job.client.walletAddress
+        : job.freelancer!.walletAddress;
+
+    const xdr = await ContractService.buildRejectRevisionTx(
+      callerWallet,
+      job.contractJobId
+    );
+    res.json({ xdr });
+  })
+);
+
 /**
  * Confirm transaction and update local database.
  * In a real app, this should ideally be handled by an event listener/indexer,
@@ -167,6 +353,24 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
       where: { id: milestoneId },
       data: { contractDeadline: new Date(newDeadline) },
     });
+  } else if (type === "SUBMIT_MILESTONE" && milestoneId) {
+    await prisma.$transaction(async (tx) => {
+      const updatedMilestone = await tx.milestone.update({
+        where: { id: milestoneId },
+        data: { status: "SUBMITTED" },
+        include: { job: true },
+      });
+
+      if (!updatedMilestone.jobId) return;
+
+      await NotificationService.sendNotification({
+        userId: updatedMilestone.job.clientId,
+        type: NotificationType.MILESTONE_SUBMITTED,
+        title: "Milestone Submitted",
+        message: `Milestone "${updatedMilestone.title}" has been submitted for review.`,
+        metadata: { jobId: updatedMilestone.jobId, milestoneId: updatedMilestone.id },
+      });
+    });
   } else if (type === "APPROVE_MILESTONE" && milestoneId) {
     await prisma.$transaction(async (tx) => {
       // Step 1: Update milestone status
@@ -204,6 +408,22 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
         });
       }
     });
+  } else if (type === "PROPOSE_REVISION" && jobId) {
+    await invalidateCacheKey(generateJobOnChainStatusCacheKey(jobId));
+    await invalidateCacheKey(generateJobCacheKey(jobId));
+  } else if (type === "ACCEPT_REVISION" && jobId) {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { contractJobId: true },
+    });
+    if (job?.contractJobId) {
+      await ContractService.syncJobFromChain(prisma, jobId, job.contractJobId);
+    }
+    await invalidateCacheKey(generateJobOnChainStatusCacheKey(jobId));
+    await invalidateCacheKey(generateJobCacheKey(jobId));
+  } else if (type === "REJECT_REVISION" && jobId) {
+    await invalidateCacheKey(generateJobOnChainStatusCacheKey(jobId));
+    await invalidateCacheKey(generateJobCacheKey(jobId));
   }
 
   res.json({ message: "Transaction confirmed and database updated." });

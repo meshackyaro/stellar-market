@@ -1,18 +1,21 @@
 "use client";
 
 import { useState, useEffect, useCallback, Suspense } from "react";
-import { Search, SlidersHorizontal } from "lucide-react";
+import { Search, SlidersHorizontal, Briefcase } from "lucide-react";
 import axios from "axios";
 import JobCard from "@/components/JobCard";
 import Pagination from "@/components/Pagination";
 import FilterSidebar from "@/components/FilterSidebar";
+import EmptyState from "@/components/EmptyState";
 import { useJobFilters } from "@/hooks/useJobFilters";
+import { useAuth } from "@/context/AuthContext";
 import { Job, PaginatedResponse } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 const JOBS_PER_PAGE = 10;
 
 function JobsContent() {
+  const { user } = useAuth();
   const {
     filters,
     debouncedSearch,
@@ -158,19 +161,23 @@ function JobsContent() {
               />
             </>
           ) : (
-            <div className="text-center py-20">
-              <p className="text-theme-text text-lg mb-2">
-                No jobs found matching your filters.
-              </p>
-              {activeCount > 0 && (
-                <button
-                  onClick={clearAll}
-                  className="text-stellar-blue hover:text-stellar-purple text-sm font-medium transition-colors"
-                >
-                  Clear all filters
-                </button>
-              )}
-            </div>
+            <EmptyState
+              icon={Briefcase}
+              title="No jobs found matching your filters."
+              description="Try adjusting or clearing your filters to broaden the search."
+              action={
+                user?.role === "CLIENT"
+                  ? { label: "Post a Job", href: "/post-job" }
+                  : activeCount > 0
+                  ? { label: "Clear Filters", onClick: clearAll }
+                  : undefined
+              }
+              secondaryAction={
+                user?.role === "CLIENT" && activeCount > 0
+                  ? { label: "Clear Filters", onClick: clearAll }
+                  : undefined
+              }
+            />
           )}
         </div>
       </div>

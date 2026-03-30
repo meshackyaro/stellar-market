@@ -1,21 +1,36 @@
-import { 
-  Address, 
-  Asset, 
-  Contract, 
-  Keypair, 
-  Networks, 
-  rpc, 
-  scValToNative, 
-  TransactionBuilder, 
+import {
+  Address,
+  Contract,
+  rpc,
+  scValToNative,
+  TransactionBuilder,
   xdr,
   nativeToScVal,
-  BASE_FEE
+  BASE_FEE,
 } from "@stellar/stellar-sdk";
+import type { PrismaClient } from "@prisma/client";
+import { MilestoneStatus } from "@prisma/client";
 import { config } from "../config";
 
 const server = new rpc.Server(config.stellar.rpcUrl);
 const networkPassphrase = config.stellar.networkPassphrase;
 const contractId = config.stellar.escrowContractId;
+const READONLY_SOURCE = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+const STROOPS_PER_XLM = 10_000_000n;
+
+export type RevisionProposalView = {
+  proposer: string;
+  status: "PENDING" | "ACCEPTED" | "REJECTED";
+  newTotalStroops: string;
+  milestones: Array<{
+    id: number;
+    description: string;
+    amountStroops: string;
+    deadline: number;
+    status: string;
+  }>;
+  createdAt: number;
+};
 
 export class ContractService {
   /**
@@ -59,6 +74,35 @@ export class ContractService {
     )
     .setTimeout(0)
     .build();
+
+    return tx.toXDR();
+  }
+
+  /**
+   * Builds an un-signed transaction XDR for submitting a milestone.
+   */
+  static async buildSubmitMilestoneTx(
+    freelancerPublicKey: string,
+    jobId: string,
+    milestoneId: number,
+  ) {
+    const contract = new Contract(contractId);
+    const account = await server.getAccount(freelancerPublicKey);
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(
+        contract.call(
+          "submit_milestone",
+          nativeToScVal(BigInt(jobId)),
+          nativeToScVal(milestoneId, { type: "u32" }),
+          new Address(freelancerPublicKey).toScVal(),
+        ),
+      )
+      .setTimeout(0)
+      .build();
 
     return tx.toXDR();
   }
@@ -253,62 +297,320 @@ export class ContractService {
     return tx.toXDR();
   }
 
+  private static async buildReadonlySimTx(
+    operation: xdr.Operation
+  ): Promise<ReturnType<TransactionBuilder["build"]>> {
+    const sourceAccount = await server.getAccount(READONLY_SOURCE).catch(() => {
+      return {
+        accountId: () => READONLY_SOURCE,
+        sequenceNumber: () => "0",
+        incrementSequenceNumber: () => {},
+      } as any;
+    });
+    return new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(operation)
+      .setTimeout(0)
+      .build();
+  }
+
+  private static async simulateContractRead(operation: xdr.Operation): Promise<unknown> {
+    const tx = await this.buildReadonlySimTx(operation);
+    const simulation = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(simulation)) {
+      const err = simulation.error;
+      const msg = typeof err === "string" ? err : (err as { message?: string })?.message;
+      throw new Error(msg || "Simulation failed");
+    }
+    return scValToNative(simulation.result!.retval);
+  }
+
   /**
    * Fetches the on-chain status of a job from the escrow contract.
    */
   static async getOnChainJobStatus(onChainJobId: string): Promise<string> {
     try {
       const contract = new Contract(contractId);
-      
-      // We use a dummy address for simulation as view functions don't require specific authorization
-      const dummyAddress = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
-      const sourceAccount = await server.getAccount(dummyAddress).catch(() => {
-        // Fallback if account doesn't exist on-chain
-        return {
-          accountId: () => dummyAddress,
-          sequenceNumber: () => "0",
-          incrementSequenceNumber: () => {},
-        } as any;
-      });
+      const native = await this.simulateContractRead(
+        contract.call("get_job", nativeToScVal(BigInt(onChainJobId)))
+      );
+      const job = native as { status: string | string[] };
+      const rawStatus = Array.isArray(job.status) ? job.status[0] : job.status;
+      const status = String(rawStatus ?? "").toUpperCase();
 
-      const tx = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
-        networkPassphrase,
-      })
+      switch (status) {
+        case "CREATED":
+          return "UNFUNDED";
+        case "FUNDED":
+        case "INPROGRESS":
+          return "FUNDED";
+        case "COMPLETED":
+          return "COMPLETED";
+        case "DISPUTED":
+          return "DISPUTED";
+        case "CANCELLED":
+          return "CANCELLED";
+        default:
+          return status;
+      }
+    } catch (error) {
+      console.error(`Error fetching on-chain status for job ${onChainJobId}:`, error);
+      throw error;
+    }
+  }
+
+  private static unwrapSorobanOption<T>(val: unknown): T | null {
+    if (val === null || val === undefined) return null;
+    if (Array.isArray(val)) {
+      if (val.length === 0) return null;
+      const tag = val[0];
+      if (tag === "None" || tag === 0) return null;
+      if ((tag === "Some" || tag === 1) && val.length >= 2) return val[1] as T;
+      return val as unknown as T;
+    }
+    if (typeof val === "object" && val !== null) {
+      const o = val as Record<string, unknown>;
+      if ("Some" in o && o.Some !== undefined) return o.Some as T;
+      if ("None" in o) return null;
+    }
+    return val as T;
+  }
+
+  private static normalizeProposalStatus(
+    s: unknown
+  ): "PENDING" | "ACCEPTED" | "REJECTED" {
+    const raw = Array.isArray(s) ? s[0] : s;
+    const u = String(raw ?? "").toUpperCase();
+    if (u === "PENDING") return "PENDING";
+    if (u === "ACCEPTED") return "ACCEPTED";
+    if (u === "REJECTED") return "REJECTED";
+    return "PENDING";
+  }
+
+  private static milestoneToProposeScVal(
+    index: number,
+    description: string,
+    amountStroops: bigint,
+    deadlineUnix: bigint
+  ) {
+    return nativeToScVal({
+      amount: amountStroops,
+      deadline: deadlineUnix,
+      description,
+      id: nativeToScVal(index, { type: "u32" }),
+      status: [nativeToScVal("Pending", { type: "symbol" })],
+    });
+  }
+
+  /**
+   * Builds an un-signed transaction XDR for proposing a milestone/budget revision.
+   */
+  static async buildProposeRevisionTx(
+    callerPublicKey: string,
+    onChainJobId: string,
+    milestones: { description: string; amount: number; deadlineUnix: number }[]
+  ): Promise<string> {
+    const contract = new Contract(contractId);
+    const account = await server.getAccount(callerPublicKey);
+    const scMilestones = milestones.map((m, i) =>
+      this.milestoneToProposeScVal(
+        i,
+        m.description,
+        BigInt(Math.floor(m.amount * Number(STROOPS_PER_XLM))),
+        BigInt(m.deadlineUnix)
+      )
+    );
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
       .addOperation(
         contract.call(
-          "get_job",
+          "propose_revision",
+          new Address(callerPublicKey).toScVal(),
+          nativeToScVal(BigInt(onChainJobId)),
+          nativeToScVal(scMilestones, { type: "vec" })
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return tx.toXDR();
+  }
+
+  static async buildAcceptRevisionTx(
+    callerPublicKey: string,
+    onChainJobId: string
+  ): Promise<string> {
+    const contract = new Contract(contractId);
+    const account = await server.getAccount(callerPublicKey);
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(
+        contract.call(
+          "accept_revision",
+          new Address(callerPublicKey).toScVal(),
           nativeToScVal(BigInt(onChainJobId))
         )
       )
       .setTimeout(0)
       .build();
+    return tx.toXDR();
+  }
 
-      const simulation = await server.simulateTransaction(tx);
-      
-      if (rpc.Api.isSimulationSuccess(simulation)) {
-        const resultVal = simulation.result!.retval;
-        const job = scValToNative(resultVal);
-        
-        // job.status is an enum variant name if scValToNative was used
-        const status = job.status.toUpperCase();
-        
-        // Map contract status to DB escrow_status
-        switch (status) {
-          case "CREATED": return "UNFUNDED";
-          case "FUNDED":
-          case "INPROGRESS": return "FUNDED";
-          case "COMPLETED": return "COMPLETED";
-          case "DISPUTED": return "DISPUTED";
-          case "CANCELLED": return "CANCELLED";
-          default: return status;
-        }
+  static async buildRejectRevisionTx(
+    callerPublicKey: string,
+    onChainJobId: string
+  ): Promise<string> {
+    const contract = new Contract(contractId);
+    const account = await server.getAccount(callerPublicKey);
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase,
+    })
+      .addOperation(
+        contract.call(
+          "reject_revision",
+          new Address(callerPublicKey).toScVal(),
+          nativeToScVal(BigInt(onChainJobId))
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return tx.toXDR();
+  }
+
+  private static parseRevisionProposalRaw(raw: Record<string, unknown>): RevisionProposalView {
+    const ms = (raw.new_milestones ?? raw.newMilestones) as unknown[] | undefined;
+    const newTotal = raw.new_total ?? raw.newTotal;
+    const created = raw.created_at ?? raw.createdAt;
+    return {
+      proposer: String(raw.proposer ?? ""),
+      status: this.normalizeProposalStatus(raw.status),
+      newTotalStroops: String(
+        typeof newTotal === "bigint" ? newTotal : BigInt(Number(newTotal ?? 0))
+      ),
+      milestones: (ms ?? []).map((entry) => {
+        const m = entry as Record<string, unknown>;
+        const st = m.status;
+        const statusStr = Array.isArray(st) ? String(st[0] ?? "") : String(st ?? "");
+        return {
+          id: Number(m.id ?? 0),
+          description: String(m.description ?? ""),
+          amountStroops: String(
+            typeof m.amount === "bigint" ? m.amount : BigInt(Number(m.amount ?? 0))
+          ),
+          deadline: Number(
+            typeof m.deadline === "bigint" ? m.deadline : BigInt(Number(m.deadline ?? 0))
+          ),
+          status: statusStr,
+        };
+      }),
+      createdAt: Number(
+        typeof created === "bigint" ? created : BigInt(Number(created ?? 0))
+      ),
+    };
+  }
+
+  /**
+   * Reads the stored revision proposal for a job from chain (simulation).
+   */
+  static async getRevisionProposal(
+    onChainJobId: string
+  ): Promise<RevisionProposalView | null> {
+    try {
+      const contract = new Contract(contractId);
+      const native = await this.simulateContractRead(
+        contract.call(
+          "get_revision_proposal",
+          nativeToScVal(BigInt(onChainJobId))
+        )
+      );
+      let raw = this.unwrapSorobanOption<Record<string, unknown>>(native);
+      if (
+        !raw &&
+        native &&
+        typeof native === "object" &&
+        !Array.isArray(native) &&
+        "proposer" in native
+      ) {
+        raw = native as Record<string, unknown>;
       }
-      
-      throw new Error(`Simulation failed for job ${onChainJobId}`);
+      if (!raw) return null;
+      return this.parseRevisionProposalRaw(raw);
     } catch (error) {
-      console.error(`Error fetching on-chain status for job ${onChainJobId}:`, error);
-      throw error;
+      console.warn(`get_revision_proposal simulation failed for ${onChainJobId}:`, error);
+      return null;
     }
+  }
+
+  private static mapChainMilestoneStatus(chainStatus: unknown): MilestoneStatus {
+    const raw = Array.isArray(chainStatus) ? chainStatus[0] : chainStatus;
+    const u = String(raw ?? "").toUpperCase();
+    if (u === "IN_PROGRESS" || u === "INPROGRESS") return MilestoneStatus.IN_PROGRESS;
+    if (u === "SUBMITTED") return MilestoneStatus.SUBMITTED;
+    if (u === "APPROVED") return MilestoneStatus.APPROVED;
+    if (u === "REJECTED") return MilestoneStatus.REJECTED;
+    return MilestoneStatus.PENDING;
+  }
+
+  /**
+   * Overwrites local job budget and milestones from on-chain job state (after revision accept).
+   */
+  static async syncJobFromChain(
+    prisma: PrismaClient,
+    jobId: string,
+    onChainJobId: string
+  ): Promise<void> {
+    const contract = new Contract(contractId);
+    const native = await this.simulateContractRead(
+      contract.call("get_job", nativeToScVal(BigInt(onChainJobId)))
+    );
+    const job = native as {
+      total_amount: bigint | number;
+      milestones: Array<{
+        id: number;
+        description: string;
+        amount: bigint | number;
+        status: unknown;
+        deadline: bigint | number;
+      }>;
+    };
+    const totalStroops =
+      typeof job.total_amount === "bigint"
+        ? job.total_amount
+        : BigInt(Math.floor(Number(job.total_amount)));
+    const budgetXlm = Number(totalStroops) / Number(STROOPS_PER_XLM);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.milestone.deleteMany({ where: { jobId } });
+      const list = job.milestones ?? [];
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        const amountStroops =
+          typeof m.amount === "bigint" ? m.amount : BigInt(Math.floor(Number(m.amount)));
+        const deadlineSec =
+          typeof m.deadline === "bigint" ? m.deadline : BigInt(Math.floor(Number(m.deadline)));
+        await tx.milestone.create({
+          data: {
+            jobId,
+            title: String(m.description).slice(0, 200) || `Milestone ${i + 1}`,
+            description: String(m.description ?? ""),
+            amount: Number(amountStroops) / Number(STROOPS_PER_XLM),
+            status: this.mapChainMilestoneStatus(m.status),
+            order: i,
+            onChainIndex: Number(m.id ?? i),
+            contractDeadline: new Date(Number(deadlineSec) * 1000),
+          },
+        });
+      }
+      await tx.job.update({
+        where: { id: jobId },
+        data: { budget: budgetXlm },
+      });
+    });
   }
 }

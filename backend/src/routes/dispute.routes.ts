@@ -104,6 +104,52 @@ router.post(
 );
 
 /**
+ * POST /api/disputes/init-raise
+ * Initialize dispute creation (get XDR for signing)
+ */
+router.post(
+  "/init-raise",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { jobId, reason, minVotes } = req.body;
+
+    const dispute = await DisputeService.initRaiseDispute(
+      jobId,
+      req.userId!,
+      reason,
+      minVotes,
+    );
+
+    res.json(dispute);
+  }),
+);
+
+/**
+ * POST /api/disputes/confirm-tx
+ * Confirm dispute transaction
+ */
+router.post(
+  "/confirm-tx",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { hash, type, jobId, onChainDisputeId, respondentId, reason } =
+      req.body;
+
+    const result = await DisputeService.confirmDisputeTransaction(
+      hash,
+      type,
+      jobId,
+      onChainDisputeId,
+      respondentId,
+      reason,
+      req.userId!,
+    );
+
+    res.json(result);
+  }),
+);
+
+/**
  * POST /api/disputes/:id/votes
  * Cast a vote on a dispute
  */
@@ -111,15 +157,21 @@ router.post(
   "/:id/votes",
   authenticate,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const dispute = await DisputeService.getDisputeById(req.params.id as string);
+    const dispute = await DisputeService.getDisputeById(
+      req.params.id as string,
+    );
     if (!dispute) {
       return res.status(404).json({ error: "Dispute not found." });
     }
 
     // Conflict-of-interest check: Job participants cannot vote
-    if (dispute.job.clientId === req.userId || dispute.job.freelancerId === req.userId) {
-      return res.status(403).json({ 
-        error: "Job participants (client or freelancer) cannot vote on their own dispute." 
+    if (
+      dispute.job.clientId === req.userId ||
+      dispute.job.freelancerId === req.userId
+    ) {
+      return res.status(403).json({
+        error:
+          "Job participants (client or freelancer) cannot vote on their own dispute.",
       });
     }
     const data = castVoteSchema.parse(req.body);
