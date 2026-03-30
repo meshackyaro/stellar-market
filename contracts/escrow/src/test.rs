@@ -1861,3 +1861,100 @@ fn test_fund_job_overfunding_rejected() {
     // Must fail with InvalidAmount
     escrow.fund_job(&job_id, &user);
 }
+
+// ── PaymentReleased event tests (issue #218) ─────────────────────────────────
+
+#[test]
+fn test_payment_released_event_emitted_on_last_milestone_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, client_addr, freelancer, token_addr, _) = setup_test(&env);
+    let token = TokenClient::new(&env, &token_addr);
+
+    let amount: i128 = 1000;
+    let milestones = vec![&env, (String::from_str(&env, "Only task"), amount, JOB_DEADLINE)];
+    let job_id = contract.create_job(&client_addr, &freelancer, &token_addr, &milestones, &JOB_DEADLINE, &GRACE_PERIOD);
+
+    contract.fund_job(&job_id, &client_addr);
+    contract.submit_milestone(&job_id, &0, &freelancer);
+    contract.approve_milestone(&job_id, &0, &client_addr);
+
+    // Job should be Completed
+    let job = contract.get_job(&job_id);
+    assert_eq!(job.status, JobStatus::Completed);
+
+    // Verify PaymentReleased event was emitted — it is the last event
+    let events = env.events().all();
+    let last_event = events.last().expect("At least one event should be emitted");
+    let topic1: Symbol = last_event.1.get(1).unwrap().into_val(&env);
+    assert_eq!(topic1, Symbol::new(&env, "pmt_released"), "Last event should be pmt_released");
+
+    // Freelancer should have received payment (no fee configured)
+    assert_eq!(token.balance(&freelancer), amount);
+}
+
+#[test]
+fn test_payment_released_event_not_emitted_on_partial_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, client_addr, freelancer, token_addr, _) = setup_test(&env);
+
+    let milestones = vec![
+        &env,
+        (String::from_str(&env, "Phase 1"), 500_i128, JOB_DEADLINE),
+        (String::from_str(&env, "Phase 2"), 500_i128, JOB_DEADLINE),
+    ];
+    let job_id = contract.create_job(&client_addr, &freelancer, &token_addr, &milestones, &JOB_DEADLINE, &GRACE_PERIOD);
+
+    contract.fund_job(&job_id, &client_addr);
+    contract.submit_milestone(&job_id, &0, &freelancer);
+    contract.approve_milestone(&job_id, &0, &client_addr);
+
+    // Job should still be InProgress (not all milestones approved)
+    let job = contract.get_job(&job_id);
+    assert_eq!(job.status, JobStatus::InProgress);
+
+    // Verify PaymentReleased event was NOT emitted — last event should be "milestone"
+    let events = env.events().all();
+    let last_event = events.last().expect("At least one event should be emitted");
+    let topic1: Symbol = last_event.1.get(1).unwrap().into_val(&env);
+    assert_ne!(
+        topic1,
+        Symbol::new(&env, "pmt_released"),
+        "PaymentReleased event should NOT be emitted for partial approval"
+    );
+}
+
+#[test]
+fn test_payment_released_event_emitted_via_batch_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, client_addr, freelancer, token_addr, _) = setup_test(&env);
+
+    let milestones = vec![
+        &env,
+        (String::from_str(&env, "Phase 1"), 400_i128, JOB_DEADLINE),
+        (String::from_str(&env, "Phase 2"), 600_i128, JOB_DEADLINE),
+    ];
+    let job_id = contract.create_job(&client_addr, &freelancer, &token_addr, &milestones, &JOB_DEADLINE, &GRACE_PERIOD);
+
+    contract.fund_job(&job_id, &client_addr);
+    contract.submit_milestone(&job_id, &0, &freelancer);
+    contract.submit_milestone(&job_id, &1, &freelancer);
+    contract.approve_milestones_batch(&job_id, &vec![&env, 0_u32, 1_u32], &client_addr);
+
+    let job = contract.get_job(&job_id);
+    assert_eq!(job.status, JobStatus::Completed);
+
+    // Last event should be pmt_released
+    let events = env.events().all();
+    let last_event = events.last().expect("At least one event should be emitted");
+    let topic1: Symbol = last_event.1.get(1).unwrap().into_val(&env);
+    assert_eq!(topic1, Symbol::new(&env, "pmt_released"), "Last event should be pmt_released via batch");
+}

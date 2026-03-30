@@ -25,7 +25,7 @@ interface WalletState {
   disconnect: () => void;
   signAndBroadcastTransaction: (
     xdr: string
-  ) => Promise<{ hash: string; success: boolean; error?: string }>;
+  ) => Promise<{ hash: string; success: boolean; error?: string; resultXdr?: string }>;
 }
 
 const WalletContext = createContext<WalletState | undefined>(undefined);
@@ -162,7 +162,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           statusResponse = await server.getTransaction(sendResponse.hash);
 
           if (statusResponse.status === rpc.Api.GetTransactionStatus.SUCCESS) {
-            return { success: true, hash: sendResponse.hash };
+            const successResponse = statusResponse as rpc.Api.GetSuccessfulTransactionResponse;
+            return {
+              success: true,
+              hash: sendResponse.hash,
+              resultXdr: successResponse.returnValue?.toXDR("base64"),
+            };
           }
 
           if (statusResponse.status === rpc.Api.GetTransactionStatus.FAILED) {

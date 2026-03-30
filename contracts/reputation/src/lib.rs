@@ -916,6 +916,57 @@ impl ReputationContract {
             None => Vec::new(&env),
         }
     }
+
+    /// Slash the staked reputation score of a losing dispute party.
+    /// Reduces total_score by `amount` (floored at 0) and emits a StakeSlashed event.
+    /// Can only be called by the registered admin (dispute contract should be admin or
+    /// a trusted caller — in practice the dispute contract invokes this cross-contract).
+    pub fn slash_stake(
+        env: Env,
+        caller: Address,
+        loser: Address,
+        job_id: u64,
+        amount: u64,
+    ) -> Result<(), ReputationError> {
+        caller.require_auth();
+        require_not_paused(&env)?;
+
+        // Only admin may slash stakes
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ReputationError::NotInitialized)?;
+        if caller != stored_admin {
+            return Err(ReputationError::NotAdmin);
+        }
+
+        let rep_key = DataKey::Reputation(loser.clone());
+        let mut reputation: UserReputation = env
+            .storage()
+            .persistent()
+            .get(&rep_key)
+            .unwrap_or(UserReputation {
+                user: loser.clone(),
+                total_score: 0,
+                total_weight: 0,
+                review_count: 0,
+            });
+
+        // Reduce score, floor at 0
+        reputation.total_score = reputation.total_score.saturating_sub(amount);
+
+        env.storage().persistent().set(&rep_key, &reputation);
+        bump_reputation_ttl(&env, &loser);
+
+        // Emit StakeSlashed event
+        env.events().publish(
+            (symbol_short!("reput"), symbol_short!("slashed")),
+            (loser, job_id, amount),
+        );
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
