@@ -74,7 +74,7 @@ fn setup_in_progress_job(
 }
 
 fn create_token(env: &Env, admin: &Address) -> Address {
-    env.register_stellar_asset_contract(admin.clone())
+    env.register_stellar_asset_contract_v2(admin.clone()).address()
 }
 
 fn mint(env: &Env, token_addr: &Address, admin: &Address, to: &Address, amount: i128) {
@@ -813,6 +813,80 @@ fn test_tier_downgrade_no_badge_removal() {
     assert_eq!(badges.len(), 2); // Silver badge remains, Bronze badge added
     assert_eq!(badges.get(0).unwrap().badge_type, ReputationTier::Silver);
     assert_eq!(badges.get(1).unwrap().badge_type, ReputationTier::Bronze);
+}
+
+#[test]
+fn test_get_reputation_with_decay() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+
+    // Initialize with 50% decay per year
+    let admin = Address::generate(&env);
+    reputation_client.initialize(&admin, &50);
+    reputation_client.set_token(&admin, &Address::generate(&env)); // Needs a token set for transfers
+
+    let reviewer = Address::generate(&env);
+    let reviewee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &reviewer, 100_000_000);
+
+    // Set token in reputation contract to match the job token
+    reputation_client.set_token(&admin, &token_addr);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
+
+    // Initial review at t=0
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: 0,
+        protocol_version: 20,
+        sequence_number: 100,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 100000,
+    });
+
+    reputation_client.submit_review(
+        &escrow_id,
+        &reviewer,
+        &reviewee,
+        &1u64,
+        &4u32,
+        &String::from_str(&env, "Good"),
+        &MIN_STAKE,
+    );
+
+    // At t=0, score should be raw
+    let rep0 = reputation_client.get_reputation(&reviewee);
+    assert_eq!(rep0.total_score, 4 * MIN_STAKE as u64);
+    assert_eq!(rep0.total_weight, MIN_STAKE as u64);
+
+    // Advance time by 1 year (31,536,000 seconds)
+    // Decay is 50%, so weight should be 50% of MIN_STAKE
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: 31_536_000,
+        protocol_version: 20,
+        sequence_number: 100,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 100000,
+    });
+    
+    let rep1 = reputation_client.get_reputation(&reviewee);
+    let expected_weight = (MIN_STAKE as u64) / 2;
+    let expected_score = 4 * expected_weight;
+    
+    assert_eq!(rep1.total_weight, expected_weight);
+    assert_eq!(rep1.total_score, expected_score);
+    assert_eq!(rep1.review_count, 1);
 }
 
 #[test]

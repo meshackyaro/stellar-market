@@ -20,7 +20,7 @@ const JOB_DEADLINE: u64 = 1_000_000; // Example value
 
 // Correction 3: token_address is already Address from register_stellar_asset_contract_v2,
 // so we use it directly without calling .address() on it.
-fn setup_test(env: &Env) -> (EscrowContractClient, Address, Address, Address, Address) {
+fn setup_test(env: &Env) -> (EscrowContractClient<'_>, Address, Address, Address, Address) {
     let contract_id = env.register_contract(None, EscrowContract);
     let client = EscrowContractClient::new(env, &contract_id);
 

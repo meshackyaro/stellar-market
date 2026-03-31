@@ -60,7 +60,7 @@ const AUTO_REFUND: u64 = DEADLINE + 1_000_000;
 
 /// Test helper to create a token contract and mint tokens to an address
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> (Address, TokenClient<'a>) {
-    let token_address = env.register_stellar_asset_contract(admin.clone());
+    let token_address = env.register_stellar_asset_contract_v2(admin.clone()).address();
     let token = TokenClient::new(env, &token_address);
     (token_address, token)
 }

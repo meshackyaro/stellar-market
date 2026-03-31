@@ -15,8 +15,24 @@ import {
   Clock,
   CheckCircle2,
   Trash2,
+  CheckCircle2,
+  Clock,
+  Send,
+  XCircle,
+  Eye,
+  ChevronRight,
 } from "lucide-react";
 import axios from "axios";
+import Link from "next/link";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+} from "recharts";
 import StatusBadge from "@/components/StatusBadge";
 import { useAuth } from "@/context/AuthContext";
 import { Job, Application, PaginatedResponse } from "@/types";
@@ -60,6 +76,7 @@ interface MilestoneItem {
 
 export default function DashboardPage() {
   const { user, token, isLoading } = useAuth();
+  const { socket } = useSocket();
   const isClient = user?.role === "CLIENT";
 
   const clientTabs = ["My Posted Jobs", "Applicants to Review", "Active Disputes", "Messages"];
@@ -87,12 +104,8 @@ export default function DashboardPage() {
   const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
   const [withdrawConfirmId, setWithdrawConfirmId] = useState<string | null>(null);
 
-  // Sync the active tab whenever the role becomes known so we always start
-  // on a tab that belongs to the current role.
-  useEffect(() => {
-    setActiveTab(isClient ? clientTabs[0] : freelancerTabs[0]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isClient]);
+  const [jobs, setJobs] = useState<ExtendedJob[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(false);
 
   const fetchDashboardData = useCallback(async () => {
     if (!token || !user) return;
@@ -169,6 +182,47 @@ export default function DashboardPage() {
     }
   }, [token, user, isClient]);
 
+  const fetchPendingApplicants = useCallback(async () => {
+    if (!token || !user?.id || !isClient) return;
+    setApplicantsLoading(true);
+    try {
+      const jobsRes = await axios.get(`${API_URL}/jobs/mine`, {
+        params: { limit: 100 },
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const clientJobs: ExtendedJob[] = (jobsRes.data.data ?? []).filter(
+        (j: ExtendedJob) => j.client?.id === user.id && j.status === "OPEN"
+      );
+
+      const allApps: ExtendedApplication[] = [];
+      for (const job of clientJobs) {
+        try {
+          const appsRes = await axios.get(`${API_URL}/jobs/${job.id}/applications`, {
+            params: { status: "PENDING", limit: 20 },
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const apps = (appsRes.data.data ?? []).map((a: ExtendedApplication) => ({
+            ...a,
+            job: { id: job.id, title: job.title },
+          }));
+          allApps.push(...apps);
+        } catch {
+          // Skip jobs with fetch errors
+        }
+      }
+      setPendingApplicants(allApps);
+    } catch {
+      setPendingApplicants([]);
+    } finally {
+      setApplicantsLoading(false);
+    }
+  }, [token, user?.id, isClient]);
+
+  useEffect(() => {
+    fetchStats();
+    fetchWeeklyData();
+  }, [fetchStats, fetchWeeklyData]);
+
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
@@ -180,8 +234,9 @@ export default function DashboardPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setApplications((prev) => prev.filter((a) => a.id !== appId));
+      fetchStats();
     } catch {
-      // Keep list unchanged on error — user can retry
+      // Keep list unchanged on error
     } finally {
       setWithdrawingId(null);
       setWithdrawConfirmId(null);
@@ -243,8 +298,8 @@ export default function DashboardPage() {
               <div className="text-sm text-theme-text">{stat.label}</div>
               <div className="text-xs text-theme-text/60 mt-0.5">{dataLoading ? "" : stat.detail}</div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
 
       {/* Tabs */}

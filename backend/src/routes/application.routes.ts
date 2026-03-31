@@ -213,6 +213,41 @@ router.put(
         },
       });
 
+      
+
+      // Reject all other pending applications for this job
+      const rejectedApplications = await prisma.application.findMany({
+        where: {
+          jobId: application.jobId,
+          id: { not: id },
+          status: "PENDING",
+        },
+        select: { id: true, freelancerId: true },
+      });
+
+      if (rejectedApplications.length > 0) {
+        // Update all other pending applications to REJECTED
+        await prisma.application.updateMany({
+          where: {
+            jobId: application.jobId,
+            id: { not: id },
+            status: "PENDING",
+          },
+          data: { status: "REJECTED" },
+        });
+
+        // Notify each rejected freelancer
+        for (const rejectedApp of rejectedApplications) {
+          await NotificationService.sendNotification({
+            userId: rejectedApp.freelancerId,
+            type: NotificationType.APPLICATION_REJECTED,
+            title: "Application Rejected",
+            message: `Your application for "${application.job.title}" has been rejected. Another candidate was selected.`,
+            metadata: { jobId: application.jobId, applicationId: rejectedApp.id },
+          });
+        }
+      }
+
       // Notify the freelancer
       await NotificationService.sendNotification({
         userId: application.freelancerId,

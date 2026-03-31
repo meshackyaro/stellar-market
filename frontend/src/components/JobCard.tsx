@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Clock, DollarSign, Users } from "lucide-react";
 import StatusBadge from "./StatusBadge";
+import EscrowStatusBadge from "./EscrowStatusBadge";
 import { Job } from "@/types";
 import { useAuth } from "@/context/AuthContext";
 
@@ -20,9 +21,14 @@ export default function JobCard({ job }: JobCardProps) {
     <div className="card hover:border-stellar-blue/50 transition-all duration-200 cursor-pointer">
       <Link href={`/jobs/${job.id}`} className="block">
         <div className="flex items-start justify-between mb-3">
-          <span className="text-xs font-medium text-stellar-purple bg-stellar-purple/10 px-2 py-1 rounded">
-            {job.category}
-          </span>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-stellar-purple bg-stellar-purple/10 px-2 py-1 rounded w-fit">
+              {job.category}
+            </span>
+            {isClient && isOwnJob && (
+              <EscrowStatusBadge status={job.escrowStatus} />
+            )}
+          </div>
           <StatusBadge status={job.status} />
         </div>
 

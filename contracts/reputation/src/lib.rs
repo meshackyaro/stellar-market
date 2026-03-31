@@ -105,6 +105,14 @@ pub struct UserReputation {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferralBonusRecord {
+    pub amount: u64,
+    pub weight: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ReputationTier {
@@ -147,6 +155,7 @@ enum DataKey {
     ReferralStats(Address),
     BonusPaid(Address),
     ReferralBonus,
+    ReferralBonusList(Address),
 }
 
 fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
@@ -536,6 +545,9 @@ impl ReputationContract {
                 MIN_TTL_EXTEND_TO,
             );
 
+            // Credit the reputation score equivalent to the bonus rating
+            // Effectively a high-weight default review.
+            // We now store this as a record for decay calculation.
             let bonus_rating = env
                 .storage()
                 .instance()
@@ -548,7 +560,27 @@ impl ReputationContract {
                 .unwrap_or(MIN_REVIEW_STAKE_DEFAULT) as u64;
             let earned_score = bonus_rating * min_stake;
 
-            // Credit the reputation score equivalent to the bonus rating (effectively a high-weight default review)
+            let bonuses_key = DataKey::ReferralBonusList(referrer.clone());
+            let mut bonuses: Vec<ReferralBonusRecord> = env
+                .storage()
+                .persistent()
+                .get(&bonuses_key)
+                .unwrap_or(Vec::new(env));
+            
+            bonuses = bonuses.push_back(ReferralBonusRecord {
+                amount: earned_score,
+                weight: min_stake,
+                timestamp: env.ledger().timestamp(),
+            });
+
+            env.storage().persistent().set(&bonuses_key, &bonuses);
+            env.storage().persistent().extend_ttl(
+                &bonuses_key,
+                MIN_TTL_THRESHOLD,
+                MIN_TTL_EXTEND_TO,
+            );
+
+            // Update legacy accumulator (optional but good for redundant check if needed)
             let rep_key = DataKey::Reputation(referrer.clone());
             let mut reputation: UserReputation = env
                 .storage()
@@ -609,16 +641,22 @@ impl ReputationContract {
         Ok(())
     }
 
-    /// Get the reputation data for a user.
+    /// Get the reputation data for a user, applying time decay to totals.
     pub fn get_reputation(env: Env, user: Address) -> Result<UserReputation, ReputationError> {
-        let rep_key = DataKey::Reputation(user);
-        let reputation: UserReputation = env
-            .storage()
-            .persistent()
-            .get(&rep_key)
-            .ok_or(ReputationError::UserNotFound)?;
-        bump_reputation_ttl(&env, &reputation.user);
-        Ok(reputation)
+        let rep_key = DataKey::Reputation(user.clone());
+        if !env.storage().persistent().has(&rep_key) {
+            return Err(ReputationError::UserNotFound);
+        }
+
+        let (total_score, total_weight, review_count) = Self::get_decayed_totals(&env, user.clone());
+        
+        bump_reputation_ttl(&env, &user);
+        Ok(UserReputation {
+            user,
+            total_score,
+            total_weight,
+            review_count,
+        })
     }
 
     /// Initialize the reputation contract with an admin.
@@ -829,17 +867,13 @@ impl ReputationContract {
         (initial_weight.saturating_mul(decay_factor as i128)) / 100
     }
 
-    pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
+    /// Internal helper to calculate decayed totals (score, weight, count).
+    fn get_decayed_totals(env: &Env, user: Address) -> (u64, u64, u32) {
         let reviews = Self::get_reviews(env.clone(), user.clone());
-        if reviews.is_empty() {
-            return Ok(0);
-        }
-
-
         let current_time = env.ledger().timestamp();
         let mut total_score: u64 = 0;
         let mut total_weight: u64 = 0;
-
+        let review_count = reviews.len();
 
         for review in reviews.iter() {
             let effective_weight =
@@ -853,11 +887,56 @@ impl ReputationContract {
             total_weight += weight;
         }
 
+        // Add decayed referral bonuses
+        let bonuses_key = DataKey::ReferralBonusList(user);
+        let bonuses: Vec<ReferralBonusRecord> = env
+            .storage()
+            .persistent()
+            .get(&bonuses_key)
+            .unwrap_or(Vec::new(env));
 
+        let decay_rate: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DecayRate)
+            .unwrap_or(0);
+
+        for bonus in bonuses.iter() {
+            let weight = if decay_rate == 0 {
+                bonus.weight
+            } else {
+                let age_in_seconds = current_time.saturating_sub(bonus.timestamp);
+                let one_year_in_seconds = 31_536_000_u64;
+                let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / one_year_in_seconds;
+                let decay_factor = 100_u64.saturating_sub(decay_amount);
+                
+                if decay_factor == 0 {
+                    0
+                } else {
+                    (bonus.weight.saturating_mul(decay_factor)) / 100
+                }
+            };
+
+            if weight > 0 && bonus.weight > 0 {
+                // amount is already rating * weight in process_referral_bonus
+                // but wait, earned_score = bonus_rating * min_stake;
+                // so if we decay the weight, we should decay the score too.
+                // Score = bonus_rating * decayed_weight
+                let bonus_rating = bonus.amount / bonus.weight;
+                total_score += bonus_rating * weight;
+                total_weight += weight;
+            }
+        }
+
+        (total_score, total_weight, review_count)
+    }
+
+    pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
+        let (total_score, total_weight, _) = Self::get_decayed_totals(&env, user);
+        
         if total_weight == 0 {
             return Ok(0); // If completely decayed, acts as no rep
         }
-
 
         Ok((total_score * 100) / total_weight)
     }
