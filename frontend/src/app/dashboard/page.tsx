@@ -298,8 +298,8 @@ export default function DashboardPage() {
               <div className="text-sm text-theme-text">{stat.label}</div>
               <div className="text-xs text-theme-text/60 mt-0.5">{dataLoading ? "" : stat.detail}</div>
             </div>
-          ))
-        )}
+          </div>
+        ))}
       </div>
 
       {/* Tabs */}

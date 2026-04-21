@@ -96,6 +96,7 @@ model User {
 
   clientJobs         Job[]          @relation("ClientJobs")
   freelancerJobs     Job[]          @relation("FreelancerJobs")
+  services           Service[]      @relation("FreelancerServices")
   applications       Application[]
   sentMessages       Message[]      @relation("SentMessages")
   receivedMessages   Message[]      @relation("ReceivedMessages")
@@ -338,6 +339,25 @@ model SavedJob {
   @@unique([freelancerId, jobId])
   @@index([freelancerId])
   @@index([jobId])
+}
+
+model Service {
+  id           String   @id @default(cuid())
+  freelancerId String
+  title        String
+  description  String
+  category     String
+  price        Float
+  deliveryDays Int
+  skills       String[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  freelancer User @relation("FreelancerServices", fields: [freelancerId], references: [id], onDelete: Cascade)
+
+  @@index([freelancerId])
+  @@index([category])
+  @@index([createdAt])
 }
 
 model SystemState {
