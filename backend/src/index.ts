@@ -4,7 +4,7 @@ import helmet from "helmet";
 import { createServer } from "http";
 import { config } from "./config";
 import routes from "./routes";
-import { apiRateLimiter, authRateLimiter, forgotPasswordRateLimiter } from "./middleware/rate-limit";
+import { globalRateLimiter, authRateLimiter, forgotPasswordRateLimiter, writeRateLimiter } from "./middleware/rate-limit";
 import { sanitizeInput } from "./middleware/sanitize";
 import { errorHandler } from "./middleware/error";
 import { initSocket } from "./socket";
@@ -47,11 +47,16 @@ app.get("/health", (_req, res) => {
 });
 
 // Rate limiting
-app.use("/api/auth/login", authRateLimiter);
-app.use("/api/auth/register", authRateLimiter);
-app.use("/api/auth/2fa/validate", authRateLimiter);
+app.use("/api/auth", authRateLimiter);
 app.use("/api/auth/forgot-password", forgotPasswordRateLimiter);
-app.use("/api", apiRateLimiter);
+
+// Write rate limiting (applied before routes for POST mutations)
+app.use("/api/jobs", writeRateLimiter);
+app.use("/api/reviews", writeRateLimiter);
+app.use("/api/disputes", writeRateLimiter);
+
+// Global rate limiting (skip auth routes already limited)
+app.use("/api", globalRateLimiter);
 
 // API routes
 app.use("/api", routes);
