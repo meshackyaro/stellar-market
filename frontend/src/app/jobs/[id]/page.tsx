@@ -20,6 +20,7 @@ import Link from "next/link";
 import axios from "axios";
 import { useWallet } from "@/context/WalletContext";
 import { useAuth } from "@/context/AuthContext";
+import { useSocket } from "@/context/SocketContext";
 import StatusBadge from "@/components/StatusBadge";
 import ApplyModal from "@/components/ApplyModal";
 import RaiseDisputeModal from "@/components/RaiseDisputeModal";
@@ -46,6 +47,7 @@ export default function JobDetailPage() {
   const { id } = useParams();
   const { address, signAndBroadcastTransaction } = useWallet();
   const { user } = useAuth();
+  const { socket } = useSocket();
   const [job, setJob] = useState<Job | null>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
   const [reviewsLoading, setReviewsLoading] = useState(false);
@@ -70,6 +72,7 @@ export default function JobDetailPage() {
     string | null
   >(null);
   const [extendDeadlineDate, setExtendDeadlineDate] = useState<Record<string, string>>({});
+  const jobId = Array.isArray(id) ? id[0] : id;
 
   const isClient = Boolean(job && address === job.client.walletAddress);
 
@@ -78,7 +81,7 @@ export default function JobDetailPage() {
       const token = localStorage.getItem("token");
       setHasApplied(false);
 
-      const res = await axios.get(`${API_URL}/jobs/${id}`, {
+      const res = await axios.get(`${API_URL}/jobs/${jobId}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       setJob(res.data);
@@ -88,7 +91,7 @@ export default function JobDetailPage() {
         const reviewsRes = await axios.get<PaginatedResponse<Review>>(
           `${API_URL}/reviews`,
           {
-            params: { jobId: id, page: 1, limit: 50 },
+            params: { jobId, page: 1, limit: 50 },
             headers: token ? { Authorization: `Bearer ${token}` } : {},
           },
         );
@@ -104,7 +107,7 @@ export default function JobDetailPage() {
           const appsRes = await axios.get<PaginatedResponse<Application>>(
             `${API_URL}/applications`,
             {
-              params: { jobId: id, freelancerId: user.id, limit: 1 },
+              params: { jobId, freelancerId: user.id, limit: 1 },
               headers: { Authorization: `Bearer ${token}` },
             },
           );
@@ -125,18 +128,40 @@ export default function JobDetailPage() {
     } finally {
       setLoading(false);
     }
-  }, [id, user]);
+  }, [jobId, user]);
+
+  const refetchMilestones = useCallback(async () => {
+    await fetchJob();
+  }, [fetchJob]);
 
   useEffect(() => {
     fetchJob();
   }, [fetchJob]);
+
+  useEffect(() => {
+    if (!socket || !jobId) return;
+
+    const handleMilestoneUpdated = (data: { jobId?: string | number }) => {
+      if (String(data?.jobId ?? "") === jobId) {
+        void refetchMilestones();
+      }
+    };
+
+    socket.on("milestone:updated", handleMilestoneUpdated);
+    socket.on("milestone:status_changed", handleMilestoneUpdated);
+
+    return () => {
+      socket.off("milestone:updated", handleMilestoneUpdated);
+      socket.off("milestone:status_changed", handleMilestoneUpdated);
+    };
+  }, [jobId, refetchMilestones, socket]);
 
   const fetchApplications = useCallback(async () => {
     setLoadingApps(true);
     try {
       const token = localStorage.getItem("token");
       const res = await axios.get<{ data: Application[] }>(
-        `${API_URL}/jobs/${id as string}/applications`,
+        `${API_URL}/jobs/${jobId}/applications`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
       setApplications(res.data.data ?? []);
@@ -145,7 +170,7 @@ export default function JobDetailPage() {
     } finally {
       setLoadingApps(false);
     }
-  }, [id]);
+  }, [jobId]);
 
   // Fetch applicants once job loads and current user is the owner
   useEffect(() => {
