@@ -5,7 +5,9 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
 async function getProfile(id: string) {
   try {
-    const res = await fetch(`${API_URL}/users/${id}`, { next: { revalidate: 60 } });
+    const res = await fetch(`${API_URL}/users/${id}`, {
+      next: { revalidate: 60 } as RequestInit["next"],
+    });
     if (!res.ok) return null;
     return res.json();
   } catch (error) {
@@ -29,7 +31,9 @@ export async function generateMetadata({
   }
 
   const title = `${profile.username} | StellarMarket`;
-  const description = profile.bio?.substring(0, 160) || `Check out ${profile.username}'s profile on StellarMarket.`;
+  const description =
+    profile.bio?.substring(0, 160) ||
+    `Check out ${profile.username}'s profile on StellarMarket.`;
 
   return {
     title,

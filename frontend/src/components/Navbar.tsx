@@ -15,23 +15,25 @@ import {
   Settings,
   Search,
   ShieldCheck,
+  Unplug,
 } from "lucide-react";
 import axios from "axios";
 import { useState, useRef, useEffect } from "react";
-import { useWallet } from "@/context/WalletContext";
+import { useWallet, truncateAddress } from "@/context/WalletContext";
 import { useSocket } from "@/context/SocketContext";
 import { useAuth } from "@/context/AuthContext";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import ThemeToggleButton from "./ThemeToggleButton";
 import NotificationBell from "./NotificationBell";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api";
 
 function UserMenu({ className }: { className?: string }) {
-  const { disconnect } = useWallet();
+  const { address, disconnect } = useWallet();
   const { user, logout, isLoading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -42,6 +44,13 @@ function UserMenu({ className }: { className?: string }) {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  /** Disconnects Freighter wallet without ending the backend session. */
+  const handleDisconnect = () => {
+    disconnect();
+    setMenuOpen(false);
+    router.push("/");
+  };
 
   if (isLoading) {
     return (
@@ -76,16 +85,25 @@ function UserMenu({ className }: { className?: string }) {
             <p className="text-sm font-medium text-theme-heading leading-tight">
               {user.username}
             </p>
-            <p className="text-xs text-theme-text leading-tight">{user.role}</p>
+            {/* Show live Freighter address when connected, else DB address */}
+            <p className="text-xs text-theme-text leading-tight font-mono">
+              {address ? truncateAddress(address) : user.role}
+            </p>
           </div>
         </button>
         {menuOpen && (
-          <div className="absolute right-0 mt-2 w-56 bg-theme-card border border-theme-border rounded-xl shadow-2xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
+          <div className="absolute right-0 mt-2 w-64 bg-theme-card border border-theme-border rounded-xl shadow-2xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
             <div className="px-4 py-3 border-b border-theme-border mb-1">
               <p className="text-sm font-medium text-theme-heading">
                 {user.username}
               </p>
-              <p className="text-xs text-theme-text break-all">
+              {/* Truncated Freighter address in header */}
+              {address && (
+                <p className="text-xs text-stellar-blue font-mono mt-0.5">
+                  {truncateAddress(address)}
+                </p>
+              )}
+              <p className="text-xs text-theme-text break-all mt-0.5">
                 {user.walletAddress}
               </p>
             </div>
@@ -113,6 +131,23 @@ function UserMenu({ className }: { className?: string }) {
               <Settings size={16} />
               Settings
             </Link>
+
+            {/* Wallet disconnect section — only shown when Freighter is connected */}
+            {address && (
+              <>
+                <div className="border-t border-theme-border mx-2 my-1" />
+                <button
+                  onClick={handleDisconnect}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-theme-error hover:bg-theme-error/10 transition-colors text-left"
+                  aria-label="Disconnect Freighter wallet"
+                >
+                  <Unplug size={16} />
+                  Disconnect Wallet
+                </button>
+              </>
+            )}
+
+            <div className="border-t border-theme-border mx-2 my-1" />
             <button
               onClick={() => {
                 logout();

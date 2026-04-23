@@ -2,7 +2,10 @@ import { z } from "zod";
 
 export const createDisputeSchema = z.object({
   jobId: z.string().cuid({ message: "Invalid job ID format" }),
-  reason: z.string().min(10, { message: "Reason must be at least 10 characters long" }),
+  reason: z
+    .string()
+    .min(10, { message: "Reason must be at least 10 characters long" })
+    .max(2000, { message: "Reason must not exceed 2000 characters" }),
 });
 
 export const castVoteSchema = z.object({

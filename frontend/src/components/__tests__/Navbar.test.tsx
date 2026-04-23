@@ -19,13 +19,17 @@ jest.mock("@/context/AuthContext", () => ({
     logout: jest.fn(),
     isLoading: false,
   }),
-  AuthProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  AuthProvider: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
 }));
 
 // ─── Mock ThemeContext ────────────────────────────────────────────────────────
 jest.mock("@/context/ThemeContext", () => ({
   useTheme: () => ({ theme: "dark", toggleTheme: jest.fn() }),
-  ThemeProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  ThemeProvider: ({ children }: { children: React.ReactNode }) => (
+    <>{children}</>
+  ),
 }));
 
 // ─── Mock WalletContext ───────────────────────────────────────────────────────
@@ -60,12 +64,26 @@ jest.mock("@/context/SocketContext", () => ({
 
 // ─── next/link stub ───────────────────────────────────────────────────────────
 jest.mock("next/link", () => {
-  const Link = ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
-  );
+  const Link = ({
+    children,
+    href,
+  }: {
+    children: React.ReactNode;
+    href: string;
+  }) => <a href={href}>{children}</a>;
   Link.displayName = "Link";
   return Link;
 });
+
+// ─── next/navigation stub ─────────────────────────────────────────────────────
+jest.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: jest.fn(),
+    replace: jest.fn(),
+    prefetch: jest.fn(),
+  }),
+  usePathname: () => "/",
+}));
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -92,7 +110,8 @@ describe("Navbar", () => {
     render(<Navbar />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("unread-badge")).toHaveTextContent("5");
+      const badges = screen.getAllByTestId("unread-badge");
+      expect(badges[0]).toHaveTextContent("5");
     });
   });
 
@@ -102,14 +121,16 @@ describe("Navbar", () => {
     render(<Navbar />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("unread-badge")).toHaveTextContent("2");
+      const badges = screen.getAllByTestId("unread-badge");
+      expect(badges[0]).toHaveTextContent("2");
     });
 
     await act(async () => {
       mockSocket._trigger("new_message", {});
     });
 
-    expect(screen.getByTestId("unread-badge")).toHaveTextContent("3");
+    const badges = screen.getAllByTestId("unread-badge");
+    expect(badges[0]).toHaveTextContent("3");
   });
 
   it("clears badge when messages_read event fires", async () => {
@@ -118,7 +139,8 @@ describe("Navbar", () => {
     render(<Navbar />);
 
     await waitFor(() => {
-      expect(screen.getByTestId("unread-badge")).toHaveTextContent("4");
+      const badges = screen.getAllByTestId("unread-badge");
+      expect(badges[0]).toHaveTextContent("4");
     });
 
     await act(async () => {

@@ -48,6 +48,13 @@ export default function RaiseDisputeModal({
       return;
     }
 
+    if (reason.length > 2000) {
+      setError(
+        "Reason must not exceed 2000 characters. Please shorten your description.",
+      );
+      return;
+    }
+
     setProcessing(true);
     setError(null);
 
@@ -138,11 +145,28 @@ export default function RaiseDisputeModal({
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               disabled={processing}
+              maxLength={2000}
               required
             />
-            <p className="text-xs text-theme-text mt-1">
-              This will be visible to community voters.
-            </p>
+            <div className="flex justify-between items-center mt-1">
+              <p className="text-xs text-theme-text">
+                This will be visible to community voters.
+              </p>
+              <span
+                className={`text-xs tabular-nums ${
+                  reason.length >= 2000
+                    ? "text-theme-error font-semibold"
+                    : "text-theme-text"
+                }`}
+              >
+                {reason.length} / 2000
+              </span>
+            </div>
+            {reason.length >= 2000 && (
+              <p className="text-xs text-theme-error mt-1">
+                Character limit reached. Please shorten your description.
+              </p>
+            )}
           </div>
 
           <div>

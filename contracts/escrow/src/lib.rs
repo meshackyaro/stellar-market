@@ -56,6 +56,8 @@ pub enum EscrowError {
     MultiSigAlreadyExecuted = 30,
     /// No multi-sig proposal exists with this ID.
     MultiSigProposalNotFound = 31,
+    /// Partial payment amount is invalid (must be > 0 and <= milestone remaining balance).
+    InvalidPartialAmount = 32,
 }
 
 /// Privileged actions that can be proposed and approved through the multi-sig flow.
@@ -112,6 +114,8 @@ pub enum MilestoneStatus {
     InProgress,
     Submitted,
     Approved,
+    /// Milestone has been partially paid; `amount` now holds the REMAINING unpaid balance.
+    PartiallyPaid,
 }
 
 /// Represents the lifecycle state of a revision proposal.
@@ -133,6 +137,7 @@ pub enum ProposalStatus {
 pub struct Milestone {
     pub id: u32,
     pub description: String,
+    /// For a `PartiallyPaid` milestone this is the REMAINING unpaid balance.
     pub amount: i128,
     pub status: MilestoneStatus,
     pub deadline: u64,
@@ -920,6 +925,135 @@ impl EscrowContract {
         }
 
         Ok(total_released)
+    }
+
+    /// Client releases a partial payment for a submitted milestone.
+    ///
+    /// `amount` must be > 0 and <= the milestone's current stored amount.
+    /// After the call the milestone's `amount` is reduced by `amount`.
+    /// * If the remaining balance reaches 0 the status transitions to `Approved`.
+    /// * Otherwise the status is set to `PartiallyPaid` so further payments
+    ///   (partial or full) can be made later.
+    ///
+    /// # Errors
+    /// * `Unauthorized`          — caller is not the job's client.
+    /// * `InvalidStatus`         — job is disputed, or milestone is not Submitted / PartiallyPaid.
+    /// * `InvalidPartialAmount`  — amount <= 0 or amount > milestone.amount.
+    pub fn release_partial_payment(
+        env: Env,
+        job_id: u64,
+        milestone_index: u32,
+        amount: i128,
+        client: Address,
+    ) -> Result<(), EscrowError> {
+        client.require_auth();
+        require_not_paused(&env)?;
+
+        let mut job: Job = env
+            .storage()
+            .persistent()
+            .get(&get_job_key(job_id))
+            .ok_or(EscrowError::JobNotFound)?;
+        bump_job_ttl(&env, job_id);
+
+        if job.client != client {
+            return Err(EscrowError::Unauthorized);
+        }
+        if job.status == JobStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let mut milestones = job.milestones.clone();
+        let milestone = milestones
+            .get(milestone_index)
+            .ok_or(EscrowError::MilestoneNotFound)?;
+
+        // Only allow partial payment on a Submitted or already-PartiallyPaid milestone.
+        if milestone.status != MilestoneStatus::Submitted
+            && milestone.status != MilestoneStatus::PartiallyPaid
+        {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        // Validate the requested amount.
+        if amount <= 0 || amount > milestone.amount {
+            return Err(EscrowError::InvalidPartialAmount);
+        }
+
+        // Compute fee and net freelancer amount.
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("FEE"))
+            .unwrap_or(0);
+        let treasury: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("TRE"))
+            .unwrap_or(env.current_contract_address());
+
+        let fee_amount = (amount * fee_bps as i128) / 10_000;
+        let freelancer_amount = amount - fee_amount;
+
+        let token_client = token::Client::new(&env, &job.token);
+
+        if fee_amount > 0 {
+            token_client.transfer(&env.current_contract_address(), &treasury, &fee_amount);
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("fee")),
+                (job_id, milestone_index, fee_amount, treasury.clone()),
+            );
+        }
+
+        token_client.transfer(
+            &env.current_contract_address(),
+            &job.freelancer,
+            &freelancer_amount,
+        );
+
+        // Deduct paid amount from milestone; transition status accordingly.
+        let remaining = milestone.amount - amount;
+        let new_status = if remaining == 0 {
+            MilestoneStatus::Approved
+        } else {
+            MilestoneStatus::PartiallyPaid
+        };
+
+        let updated = Milestone {
+            id: milestone.id,
+            description: milestone.description.clone(),
+            amount: remaining,
+            status: new_status,
+            deadline: milestone.deadline,
+        };
+        milestones.set(milestone_index, updated);
+        job.milestones = milestones.clone();
+
+        // Check if all milestones are now fully paid.
+        let all_approved = milestones
+            .iter()
+            .all(|m| m.status == MilestoneStatus::Approved);
+        if all_approved {
+            job.status = JobStatus::Completed;
+        }
+
+        env.storage().persistent().set(&get_job_key(job_id), &job);
+        bump_job_ttl(&env, job_id);
+
+        // Emit PartialPaymentReleased event.
+        env.events().publish(
+            (symbol_short!("escrow"), Symbol::new(&env, "partial_pmt")),
+            (job_id, milestone_index, amount),
+        );
+
+        if all_approved {
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "pmt_released")),
+                (job_id, job.freelancer, amount),
+            );
+        }
+
+        Ok(())
     }
 
     /// Cancel a funded job and refund the full escrowed balance back to the client.

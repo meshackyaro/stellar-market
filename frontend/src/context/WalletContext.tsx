@@ -84,6 +84,31 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     restoreSession();
   }, [restoreSession]);
 
+  // Listen for Freighter's accountChanged event and auto-update publicKey.
+  // Freighter dispatches a custom DOM event when the user switches accounts.
+  useEffect(() => {
+    const handleAccountChanged = async () => {
+      try {
+        const result = await getAddress();
+        if (result.error) {
+          // Switched to an account that revoked access — treat as disconnect.
+          setAddress(null);
+          setError(null);
+          localStorage.removeItem(STORAGE_KEY);
+        } else {
+          setAddress(result.address);
+        }
+      } catch {
+        // Ignore transient errors during account switching.
+      }
+    };
+
+    window.addEventListener("freighter#accountChanged", handleAccountChanged);
+    return () => {
+      window.removeEventListener("freighter#accountChanged", handleAccountChanged);
+    };
+  }, []);
+
   const connect = useCallback(async () => {
     setError(null);
     setIsConnecting(true);

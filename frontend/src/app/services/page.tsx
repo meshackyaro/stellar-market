@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback, Suspense } from "react";
-import { Search, SlidersHorizontal, X, LayoutGrid } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { Search, SlidersHorizontal, X, LayoutGrid, Loader2 } from "lucide-react";
 import Link from "next/link";
 import axios from "axios";
 import ServiceCard from "@/components/ServiceCard";
-import Pagination from "@/components/Pagination";
 import EmptyState from "@/components/EmptyState";
 import { useServiceFilters } from "@/hooks/useServiceFilters";
+import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 import { ServiceListing, PaginatedResponse } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -60,15 +60,26 @@ function ServicesContent() {
 
   const [services, setServices] = useState<ServiceListing[]>([]);
   const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  const fetchServices = useCallback(async () => {
-    setLoading(true);
-    try {
+  const filterKey = JSON.stringify({
+    debouncedSearch,
+    category: filters.category,
+    skills: filters.skills,
+    minPrice: filters.minPrice,
+    maxPrice: filters.maxPrice,
+    sort: filters.sort,
+  });
+  const prevFilterKey = useRef(filterKey);
+
+  const buildParams = useCallback(
+    (p: number) => {
       const params: Record<string, string | number> = {
-        page: filters.page,
+        page: p,
         limit: SERVICES_PER_PAGE,
       };
       if (filters.category !== "All") params.category = filters.category;
@@ -77,34 +88,68 @@ function ServicesContent() {
       if (filters.minPrice) params.minPrice = Number(filters.minPrice);
       if (filters.maxPrice) params.maxPrice = Number(filters.maxPrice);
       if (filters.sort !== "newest") params.sort = filters.sort;
+      return params;
+    },
+    [filters, debouncedSearch],
+  );
 
+  const fetchFirstPage = useCallback(async () => {
+    setLoading(true);
+    setPage(1);
+    try {
       const res = await axios.get<PaginatedResponse<ServiceListing>>(
         `${API_URL}/services`,
-        { params },
+        { params: buildParams(1) },
       );
       setServices(res.data.data);
       setTotal(res.data.total);
-      setTotalPages(res.data.totalPages);
+      setHasMore(
+        res.data.data.length === SERVICES_PER_PAGE && res.data.totalPages > 1,
+      );
     } catch {
       setServices([]);
       setTotal(0);
-      setTotalPages(0);
+      setHasMore(false);
     } finally {
       setLoading(false);
     }
-  }, [
-    filters.page,
-    filters.category,
-    filters.skills,
-    filters.minPrice,
-    filters.maxPrice,
-    filters.sort,
-    debouncedSearch,
-  ]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey]);
+
+  const fetchNextPage = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    const nextPage = page + 1;
+    setLoadingMore(true);
+    try {
+      const res = await axios.get<PaginatedResponse<ServiceListing>>(
+        `${API_URL}/services`,
+        { params: buildParams(nextPage) },
+      );
+      setServices((prev) => [...prev, ...res.data.data]);
+      setPage(nextPage);
+      setHasMore(
+        res.data.data.length === SERVICES_PER_PAGE && nextPage < res.data.totalPages,
+      );
+    } catch {
+      // keep existing results on error
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMore, page, buildParams]);
 
   useEffect(() => {
-    fetchServices();
-  }, [fetchServices]);
+    if (prevFilterKey.current !== filterKey) {
+      prevFilterKey.current = filterKey;
+    }
+    fetchFirstPage();
+  }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const { sentinelRef } = useInfiniteScroll({
+    onLoadMore: fetchNextPage,
+    hasMore,
+    isLoading: loadingMore,
+    rootMargin: 200,
+  });
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
@@ -294,15 +339,38 @@ function ServicesContent() {
                   <ServiceCard key={service.id} service={service} />
                 ))}
               </div>
-              {totalPages > 1 && (
-                <div className="mt-8">
-                  <Pagination
-                    page={filters.page}
-                    totalPages={totalPages}
-                    total={total}
-                    limit={SERVICES_PER_PAGE}
-                    onPageChange={(p) => updateFilter("page", p)}
+
+              {/* Sentinel element — IntersectionObserver target */}
+              <div ref={sentinelRef} aria-hidden="true" />
+
+              {/* Loading spinner while fetching next page */}
+              {loadingMore && (
+                <div className="flex justify-center py-6">
+                  <Loader2
+                    className="animate-spin text-stellar-blue"
+                    size={28}
+                    aria-label="Loading more services"
                   />
+                </div>
+              )}
+
+              {/* End-of-results message */}
+              {!hasMore && !loadingMore && (
+                <p className="text-center text-sm text-theme-text py-6">
+                  You&apos;ve seen all {total} service{total !== 1 ? "s" : ""}.
+                </p>
+              )}
+
+              {/* Accessible "Load more" fallback button */}
+              {hasMore && !loadingMore && (
+                <div className="flex justify-center pt-4 pb-2">
+                  <button
+                    onClick={fetchNextPage}
+                    className="btn-secondary px-6 py-2 text-sm"
+                    aria-label="Load more services"
+                  >
+                    Load more
+                  </button>
                 </div>
               )}
             </>
