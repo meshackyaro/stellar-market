@@ -9,6 +9,7 @@ use stellar_market_escrow::EscrowContract;
 
 // The minimum stake required per review (must match lib.rs constant)
 const MIN_STAKE: i128 = 10_000_000;
+const ONE_YEAR_IN_SECONDS: u64 = 31_536_000;
 
 fn pause_reputation(env: &Env, client: &ReputationContractClient<'_>, admin: &Address) {
     client.propose_admin_action(admin, &AdminAction::Pause);
@@ -1056,6 +1057,80 @@ fn test_decay_calculation() {
     env.ledger()
         .with_mut(|l| l.timestamp = start_time + 63_072_000);
     assert_eq!(reputation_client.get_average_rating(&reviewee), 100);
+}
+
+#[test]
+fn test_decay_uses_timestamp_instead_of_ledger_sequence() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+    let admin = Address::generate(&env);
+
+    reputation_client.initialize(&vec![&env, admin.clone()], &1u32, &50u32);
+
+    let reviewer = Address::generate(&env);
+    let reviewee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &reviewer, 1_000_000_000);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
+
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: 0,
+        protocol_version: 20,
+        sequence_number: 100,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 100000,
+    });
+
+    reputation_client.submit_review(
+        &escrow_id,
+        &reviewer,
+        &reviewee,
+        &1u64,
+        &4u32,
+        &String::from_str(&env, "Stable over time"),
+        &MIN_STAKE,
+    );
+
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: ONE_YEAR_IN_SECONDS / 2,
+        protocol_version: 20,
+        sequence_number: 5_000_000,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 100000,
+    });
+
+    let rep = reputation_client.get_reputation(&reviewee);
+    let expected_weight = (MIN_STAKE as u64 * 75) / 100;
+
+    assert_eq!(rep.total_weight, expected_weight);
+    assert_eq!(rep.total_score, 4 * expected_weight);
+
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: ONE_YEAR_IN_SECONDS / 2,
+        protocol_version: 20,
+        sequence_number: 25,
+        network_id: [0; 32],
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 100000,
+    });
+
+    let rep_same_timestamp = reputation_client.get_reputation(&reviewee);
+    assert_eq!(rep_same_timestamp.total_weight, expected_weight);
+    assert_eq!(rep_same_timestamp.total_score, 4 * expected_weight);
 }
 
 #[test]

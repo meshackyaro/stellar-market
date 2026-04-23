@@ -205,7 +205,11 @@ fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
 }
 
 fn is_signer(env: &Env, address: &Address) -> bool {
-    if let Some(signers) = env.storage().instance().get::<_, Vec<Address>>(&DataKey::MultiSigSigners) {
+    if let Some(signers) = env
+        .storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::MultiSigSigners)
+    {
         signers.iter().any(|s| s == *address)
     } else {
         false
@@ -215,6 +219,7 @@ fn is_signer(env: &Env, address: &Address) -> bool {
 const MIN_REVIEW_STAKE_DEFAULT: i128 = 10_000_000; // 1.0 unit (7 decimals)
 const RATE_LIMIT_LEDGERS_DEFAULT: u32 = 120; // ~10 minutes
 const DEFAULT_REFERRAL_BONUS: u64 = 5; // Equivalates to a 5-star review bonus
+const ONE_YEAR_IN_SECONDS: u64 = 31_536_000;
 
 const MIN_TTL_THRESHOLD: u32 = 1_000;
 const MIN_TTL_EXTEND_TO: u32 = 10_000;
@@ -255,6 +260,17 @@ fn bump_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+}
+
+fn get_decay_factor(decay_rate: u32, current_time: u64, recorded_at: u64) -> u64 {
+    if decay_rate == 0 {
+        return 100;
+    }
+
+    let age_in_seconds = current_time.saturating_sub(recorded_at);
+    let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / ONE_YEAR_IN_SECONDS;
+
+    100_u64.saturating_sub(decay_amount)
 }
 
 /// Calculate the reputation tier based on average rating score.
@@ -595,7 +611,7 @@ impl ReputationContract {
                 .persistent()
                 .get(&bonuses_key)
                 .unwrap_or(Vec::new(env));
-            
+
             bonuses.push_back(ReferralBonusRecord {
                 amount: earned_score,
                 weight: min_stake,
@@ -671,8 +687,9 @@ impl ReputationContract {
             return Err(ReputationError::UserNotFound);
         }
 
-        let (total_score, total_weight, review_count) = Self::get_decayed_totals(&env, user.clone());
-        
+        let (total_score, total_weight, review_count) =
+            Self::get_decayed_totals(&env, user.clone());
+
         bump_reputation_ttl(&env, &user);
         Ok(UserReputation {
             user,
@@ -683,7 +700,12 @@ impl ReputationContract {
     }
 
     /// Initialize the reputation contract with signers.
-    pub fn initialize(env: Env, signers: Vec<Address>, threshold: u32, decay_rate: u32) -> Result<(), ReputationError> {
+    pub fn initialize(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+        decay_rate: u32,
+    ) -> Result<(), ReputationError> {
         if env.storage().instance().has(&DataKey::MultiSigSigners) {
             return Err(ReputationError::Unauthorized); // already initialized
         }
@@ -694,9 +716,13 @@ impl ReputationContract {
             return Err(ReputationError::NotAdmin); // Or a specific error if available
         }
 
-        env.storage().instance().set(&DataKey::MultiSigSigners, &signers);
-        env.storage().instance().set(&DataKey::MultiSigThreshold, &threshold);
-        
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigSigners, &signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigThreshold, &threshold);
+
         env.storage()
             .instance()
             .set(&DataKey::DecayRate, &decay_rate);
@@ -710,8 +736,6 @@ impl ReputationContract {
         bump_instance_ttl(&env);
         Ok(())
     }
-
-
 
     /// Get the current minimum stake requirement.
     pub fn get_min_stake(env: Env) -> i128 {
@@ -729,15 +753,21 @@ impl ReputationContract {
             .unwrap_or(RATE_LIMIT_LEDGERS_DEFAULT)
     }
 
-
-
-    pub fn propose_admin_action(env: Env, proposer: Address, action: AdminAction) -> Result<u64, ReputationError> {
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action: AdminAction,
+    ) -> Result<u64, ReputationError> {
         proposer.require_auth();
         if !is_signer(&env, &proposer) {
             return Err(ReputationError::NotAdmin);
         }
 
-        let mut count: u64 = env.storage().instance().get(&DataKey::MultiSigProposalCount).unwrap_or(0);
+        let mut count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigProposalCount)
+            .unwrap_or(0);
         count += 1;
 
         let mut approvals = Vec::new(&env);
@@ -752,15 +782,23 @@ impl ReputationContract {
             created_at: env.ledger().timestamp(),
         };
 
-        env.storage().instance().set(&DataKey::MultiSigProposal(count), &proposal);
-        env.storage().instance().set(&DataKey::MultiSigProposalCount, &count);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposal(count), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposalCount, &count);
 
         env.events().publish(
             (symbol_short!("msig"), symbol_short!("proposed")),
             (count, proposer, action),
         );
 
-        let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigThreshold)
+            .unwrap_or(1);
         if threshold == 1 {
             Self::execute_proposal(&env, count)?;
         }
@@ -768,13 +806,20 @@ impl ReputationContract {
         Ok(count)
     }
 
-    pub fn approve_admin_action(env: Env, approver: Address, proposal_id: u64) -> Result<(), ReputationError> {
+    pub fn approve_admin_action(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<(), ReputationError> {
         approver.require_auth();
         if !is_signer(&env, &approver) {
             return Err(ReputationError::NotAdmin);
         }
 
-        let mut proposal: MultiSigProposal = env.storage().instance().get(&DataKey::MultiSigProposal(proposal_id))
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigProposal(proposal_id))
             .ok_or(ReputationError::NotAdmin)?;
 
         if proposal.executed {
@@ -786,14 +831,20 @@ impl ReputationContract {
         }
 
         proposal.approvals.push_back(approver.clone());
-        env.storage().instance().set(&DataKey::MultiSigProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposal(proposal_id), &proposal);
 
         env.events().publish(
             (symbol_short!("msig"), symbol_short!("approved")),
             (proposal_id, approver),
         );
 
-        let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigThreshold)
+            .unwrap_or(1);
         if proposal.approvals.len() >= threshold {
             Self::execute_proposal(&env, proposal_id)?;
         }
@@ -802,7 +853,10 @@ impl ReputationContract {
     }
 
     fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), ReputationError> {
-        let mut proposal: MultiSigProposal = env.storage().instance().get(&DataKey::MultiSigProposal(proposal_id))
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigProposal(proposal_id))
             .ok_or(ReputationError::NotAdmin)?;
 
         if proposal.executed {
@@ -834,39 +888,69 @@ impl ReputationContract {
                 env.storage().instance().set(&DataKey::Token, &token);
             }
             AdminAction::SetReferralBonus(bonus) => {
-                env.storage().instance().set(&DataKey::ReferralBonus, &bonus);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ReferralBonus, &bonus);
             }
             AdminAction::AddSigner(signer) => {
-                let mut signers: Vec<Address> = env.storage().instance().get(&DataKey::MultiSigSigners).unwrap();
+                let mut signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
                 if !signers.iter().any(|s| s == signer) {
                     signers.push_back(signer);
-                    env.storage().instance().set(&DataKey::MultiSigSigners, &signers);
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::MultiSigSigners, &signers);
                 }
             }
             AdminAction::RemoveSigner(signer) => {
-                let mut signers: Vec<Address> = env.storage().instance().get(&DataKey::MultiSigSigners).unwrap();
-                let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
-                
+                let mut signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
+                let threshold: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigThreshold)
+                    .unwrap_or(1);
+
                 if let Some(idx) = signers.iter().position(|s| s == signer) {
                     if signers.len() <= threshold {
                         return Err(ReputationError::NotAdmin);
                     }
                     signers.remove(idx as u32);
-                    env.storage().instance().set(&DataKey::MultiSigSigners, &signers);
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::MultiSigSigners, &signers);
                 }
             }
             AdminAction::ChangeThreshold(new_threshold) => {
-                let signers: Vec<Address> = env.storage().instance().get(&DataKey::MultiSigSigners).unwrap();
+                let signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
                 if new_threshold == 0 || new_threshold > signers.len() {
                     return Err(ReputationError::NotAdmin);
                 }
-                env.storage().instance().set(&DataKey::MultiSigThreshold, &new_threshold);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::MultiSigThreshold, &new_threshold);
             }
             AdminAction::RotateSigner(old_signer, new_signer) => {
-                let mut signers: Vec<Address> = env.storage().instance().get(&DataKey::MultiSigSigners).unwrap();
+                let mut signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
                 if let Some(idx) = signers.iter().position(|s| s == old_signer) {
                     signers.set(idx as u32, new_signer);
-                    env.storage().instance().set(&DataKey::MultiSigSigners, &signers);
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::MultiSigSigners, &signers);
                 } else {
                     return Err(ReputationError::NotAdmin);
                 }
@@ -902,7 +986,9 @@ impl ReputationContract {
         }
 
         proposal.executed = true;
-        env.storage().instance().set(&DataKey::MultiSigProposal(proposal_id), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposal(proposal_id), &proposal);
 
         env.events().publish(
             (symbol_short!("msig"), symbol_short!("executed")),
@@ -911,7 +997,6 @@ impl ReputationContract {
 
         Ok(())
     }
-
 
     /// Calculate effective weight of a review, applying time decay.
     /// Formula: effective_weight = stake_weight * max(0, 100 - decay_rate * age_in_seconds / ONE_YEAR) / 100
@@ -928,23 +1013,15 @@ impl ReputationContract {
             1_i128
         };
 
-
         if decay_rate == 0 {
             return initial_weight;
         }
 
-        let age_in_seconds = current_time.saturating_sub(review.timestamp);
-        let one_year_in_seconds = 31_536_000_u64;
-
-
-        let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / one_year_in_seconds;
-        let decay_factor = 100_u64.saturating_sub(decay_amount);
-
+        let decay_factor = get_decay_factor(decay_rate, current_time, review.timestamp);
 
         if decay_factor == 0 {
             return 0;
         }
-
 
         (initial_weight.saturating_mul(decay_factor as i128)) / 100
     }
@@ -987,11 +1064,8 @@ impl ReputationContract {
             let weight = if decay_rate == 0 {
                 bonus.weight
             } else {
-                let age_in_seconds = current_time.saturating_sub(bonus.timestamp);
-                let one_year_in_seconds = 31_536_000_u64;
-                let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / one_year_in_seconds;
-                let decay_factor = 100_u64.saturating_sub(decay_amount);
-                
+                let decay_factor = get_decay_factor(decay_rate, current_time, bonus.timestamp);
+
                 if decay_factor == 0 {
                     0
                 } else {
@@ -1015,7 +1089,7 @@ impl ReputationContract {
 
     pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
         let (total_score, total_weight, _) = Self::get_decayed_totals(&env, user);
-        
+
         if total_weight == 0 {
             return Ok(0); // If completely decayed, acts as no rep
         }
@@ -1077,5 +1151,4 @@ impl ReputationContract {
             None => Vec::new(&env),
         }
     }
-
 }

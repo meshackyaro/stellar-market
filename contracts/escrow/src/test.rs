@@ -1332,7 +1332,7 @@ fn test_fund_job_rejects_non_client_caller() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin, &admin, &100u32, &604800u64);
+    client.initialize(&vec![&env, admin.clone()], &1, &admin, &100u32, &604800u64);
 
     let job_client = Address::generate(&env);
     let freelancer = Address::generate(&env);
