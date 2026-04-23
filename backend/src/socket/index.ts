@@ -41,14 +41,18 @@ export function initSocket(httpServer: HttpServer): SocketServer {
   io.on("connection", (socket) => {
     const authedSocket = socket as AuthenticatedSocket;
     const userId = authedSocket.data.userId;
+    const joinedRooms = new Set<string>();
 
-    // Join personal room so we can target this user from anywhere
     socket.join(`user:${userId}`);
+    joinedRooms.add(`user:${userId}`);
     console.log(`Socket connected: user=${userId} socket=${socket.id}`);
 
     registerMessageHandlers(io, authedSocket);
 
     socket.on("disconnect", () => {
+      for (const room of joinedRooms) {
+        socket.leave(room);
+      }
       console.log(`Socket disconnected: user=${userId} socket=${socket.id}`);
     });
   });
