@@ -11,6 +11,7 @@ import {
   updateJobStatusSchema,
   getSavedJobsQuerySchema,
 } from "../schemas";
+import { paginationSchema } from "../schemas/common";
 import {
   cache,
   invalidateCache,
@@ -90,12 +91,15 @@ router.get(
    */
   validate({ query: getJobsQuerySchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const { page, limit, search, skill, skills, status, minBudget, maxBudget, clientId, sort, postedAfter, cursor } = req.query as any;
+    const { page = 1, limit = 20, search, skill, skills, status, minBudget, maxBudget, clientId, sort, postedAfter, cursor } = req.query as any;
 
+    // Ensure limit is within bounds
+    const safeLimit = Math.min(Math.max(1, Number(limit)), 100);
+    const safePage = Math.max(1, Number(page));
 
     const cacheKey = generateJobsCacheKey({
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       search,
       skill,
       skills,
@@ -140,8 +144,8 @@ router.get(
 
       if (minBudget || maxBudget) {
         where.budget = {};
-        if (minBudget) where.budget.gte = minBudget;
-        if (maxBudget) where.budget.lte = maxBudget;
+        if (minBudget) where.budget.gte = Number(minBudget);
+        if (maxBudget) where.budget.lte = Number(maxBudget);
       }
 
       if (clientId) {
@@ -175,21 +179,33 @@ router.get(
           orderBy,
           cursor: { id: cursorId },
           skip: 1,
-          take: limit + 1,
+          take: safeLimit + 1,
         });
 
-        const hasMore = jobs.length > limit;
-        const pageData = hasMore ? jobs.slice(0, limit) : jobs;
+        const hasMore = jobs.length > safeLimit;
+        const pageData = hasMore ? jobs.slice(0, safeLimit) : jobs;
         const lastJob = pageData[pageData.length - 1];
         const nextCursor = hasMore && lastJob
           ? Buffer.from(JSON.stringify({ id: lastJob.id, createdAt: lastJob.createdAt })).toString("base64")
           : null;
 
-        return { data: pageData, nextCursor };
+        // Get total count for cursor-based pagination (optional, can be expensive)
+        const total = await prisma.job.count({ where });
+
+        return { 
+          data: pageData, 
+          pagination: {
+            total,
+            page: null, // Not applicable for cursor-based pagination
+            limit: safeLimit,
+            hasNext: hasMore,
+            nextCursor
+          }
+        };
       }
 
       // Offset-based pagination (legacy / first page with no cursor)
-      const skip = (page - 1) * limit;
+      const skip = (safePage - 1) * safeLimit;
 
       let orderBy: any = { createdAt: "desc" };
       if (sort === "oldest") orderBy = { createdAt: "asc" };
@@ -209,11 +225,13 @@ router.get(
           },
           orderBy,
           skip,
-          take: limit,
+          take: safeLimit,
         }),
         prisma.job.count({ where }),
       ]);
 
+      const totalPages = Math.ceil(total / safeLimit);
+      const hasNext = safePage < totalPages;
       const lastJob = jobs[jobs.length - 1];
       const nextCursor = lastJob
         ? Buffer.from(JSON.stringify({ id: lastJob.id, createdAt: lastJob.createdAt })).toString("base64")
@@ -221,10 +239,14 @@ router.get(
 
       return {
         data: jobs,
-        nextCursor,
-        total,
-        page,
-        totalPages: Math.ceil(total / limit),
+        pagination: {
+          total,
+          page: safePage,
+          limit: safeLimit,
+          totalPages,
+          hasNext,
+          nextCursor
+        }
       };
     });
 
@@ -237,9 +259,14 @@ router.get(
 router.get(
   "/mine",
   authenticate,
+  validate({ query: paginationSchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const { page = 1, limit = 10, status } = req.query as any;
-    const skip = (Number(page) - 1) * Number(limit);
+    const { page = 1, limit = 20, status } = req.query as any;
+    
+    // Ensure limit is within bounds
+    const safeLimit = Math.min(Math.max(1, Number(limit)), 100);
+    const safePage = Math.max(1, Number(page));
+    const skip = (safePage - 1) * safeLimit;
 
     const where: any = {
       OR: [{ clientId: req.userId }, { freelancerId: req.userId }],
@@ -250,7 +277,7 @@ router.get(
       prisma.job.findMany({
         where,
         skip,
-        take: Number(limit),
+        take: safeLimit,
         orderBy: { createdAt: "desc" },
         include: {
           client: { select: { id: true, username: true, avatarUrl: true } },
@@ -262,11 +289,18 @@ router.get(
       prisma.job.count({ where }),
     ]);
 
+    const totalPages = Math.ceil(total / safeLimit);
+    const hasNext = safePage < totalPages;
+
     res.json({
       data: jobs,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / Number(limit)),
+      pagination: {
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages,
+        hasNext,
+      },
     });
   }),
 );
@@ -290,13 +324,17 @@ router.get(
 
     const {
       page = 1,
-      limit = 10,
+      limit = 20,
       search,
       skill,
       minBudget,
       maxBudget,
     } = req.query as any;
-    const skip = (Number(page) - 1) * Number(limit);
+    
+    // Ensure limit is within bounds
+    const safeLimit = Math.min(Math.max(1, Number(limit)), 100);
+    const safePage = Math.max(1, Number(page));
+    const skip = (safePage - 1) * safeLimit;
 
     // Build job filter conditions
     const jobWhere: any = {
@@ -340,7 +378,7 @@ router.get(
         },
         orderBy: { createdAt: "desc" },
         skip,
-        take: Number(limit),
+        take: safeLimit,
       }),
       prisma.savedJob.count({
         where: savedJobWhere,
@@ -353,11 +391,18 @@ router.get(
       isSaved: true,
     }));
 
+    const totalPages = Math.ceil(total / safeLimit);
+    const hasNext = safePage < totalPages;
+
     res.json({
       data: jobs,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / Number(limit)),
+      pagination: {
+        total,
+        page: safePage,
+        limit: safeLimit,
+        totalPages,
+        hasNext,
+      },
     });
   }),
 );
