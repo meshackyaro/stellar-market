@@ -30,7 +30,7 @@ import ProposeRevisionModal, {
 } from "@/components/ProposeRevisionModal";
 import { Job, Application, PaginatedResponse, Review } from "@/types";
 import { parseJobIdFromResult } from "@/utils/stellar";
-import { ShareButton } from "@/components/ShareButton";
+import ShareMenu from "@/components/ShareMenu";
 
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -586,9 +586,10 @@ export default function JobDetailClient() {
           </h1>
 
           <div className="flex flex-wrap items-center gap-4 mb-8">
-            <ShareButton
+            <ShareMenu
               title={job.title}
-              text={`Check out this job on StellarMarket: ${job.title}`}
+              url={typeof window !== "undefined" ? window.location.href : ""}
+              description={`Check out this job on StellarMarket: ${job.title}`}
             />
           </div>
 

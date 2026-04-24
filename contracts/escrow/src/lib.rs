@@ -1090,6 +1090,11 @@ impl EscrowContract {
             return Err(EscrowError::InvalidStatus);
         }
 
+        // Additional guard: explicitly reject if Disputed (though covered by above, for clarity as per issue)
+        if job.status == JobStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
+        }
+
         // Guard: reject cancellation if any milestone is actively InProgress or Submitted.
         // The client must open a dispute for in-flight work instead.
         let work_started = job

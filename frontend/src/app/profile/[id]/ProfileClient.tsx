@@ -12,6 +12,8 @@ import {
   Edit,
   Award,
   Info,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react";
 import axios from "axios";
 import { UserProfile } from "@/types";
@@ -20,7 +22,7 @@ import Image from "next/image";
 import Skeleton from "@/components/Skeleton";
 import { useAuth } from "@/context/AuthContext";
 import { ContractService, ReputationResult } from "@/services/ContractService";
-import { ShareButton } from "@/components/ShareButton";
+import ShareMenu from "@/components/ShareMenu";
 import ProfileSkeleton from "@/components/skeletons/ProfileSkeleton";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -124,6 +126,29 @@ export default function ProfileClient() {
     return `${address.slice(0, 6)}...${address.slice(-4)}`;
   };
 
+  const getProfileCompleteness = (prof: UserProfile) => {
+    const steps = [
+      { label: "Profile Photo", value: !!prof.avatarUrl, weight: 20 },
+      { label: "Bio", value: !!prof.bio, weight: 20 },
+      { label: "Skills", value: prof.skills && prof.skills.length > 0, weight: 20 },
+      { label: "Email Address", value: !!prof.email, weight: 10 },
+      { label: "Email Verified", value: !!prof.emailVerified, weight: 10 },
+      { label: "Availability", value: prof.availability !== undefined, weight: 10 },
+      { label: "On-chain Identity", value: !!prof.walletAddress, weight: 10 },
+    ];
+
+    const completedWeight = steps
+      .filter((s) => s.value)
+      .reduce((acc, s) => acc + s.weight, 0);
+
+    return {
+      percentage: completedWeight,
+      steps: steps,
+    };
+  };
+
+  const completeness = getProfileCompleteness(profile);
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
       <div className="flex flex-col md:flex-row gap-8 items-start mb-12">
@@ -159,10 +184,10 @@ export default function ProfileClient() {
                 Edit Profile
               </Link>
             )}
-            <ShareButton
+            <ShareMenu
               title={profile.username}
-              text={`Check out ${profile.username}'s profile on StellarMarket`}
-              className={!isOwnProfile ? "ml-auto" : ""}
+              url={typeof window !== "undefined" ? window.location.href : ""}
+              description={`Check out ${profile.username}'s profile on StellarMarket`}
             />
           </div>
 
@@ -268,6 +293,45 @@ export default function ProfileClient() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-12">
         <div className="space-y-6">
+          {isOwnProfile && completeness.percentage < 100 && (
+            <div className="card border-stellar-blue/30 bg-stellar-blue/5">
+              <h3 className="text-lg font-semibold text-theme-heading mb-2 flex items-center justify-between">
+                Profile Completeness
+                <span className="text-stellar-blue font-bold">
+                  {completeness.percentage}%
+                </span>
+              </h3>
+              <div className="w-full bg-theme-border rounded-full h-2.5 mb-4 overflow-hidden">
+                <div
+                  className="bg-stellar-blue h-2.5 rounded-full transition-all duration-500"
+                  style={{ width: `${completeness.percentage}%` }}
+                ></div>
+              </div>
+              <p className="text-sm text-theme-text mb-4">
+                Complete your profile to increase trust and visibility.
+              </p>
+              <ul className="space-y-2">
+                {completeness.steps
+                  .filter((s) => !s.value)
+                  .map((step, idx) => (
+                    <li
+                      key={idx}
+                      className="text-xs flex items-center gap-2 text-theme-text"
+                    >
+                      <AlertCircle size={14} className="text-amber-500" />
+                      Add {step.label}
+                    </li>
+                  ))}
+              </ul>
+              <Link
+                href="/settings"
+                className="mt-4 block text-center py-2 px-4 bg-stellar-blue text-white rounded-lg text-sm font-medium hover:bg-stellar-blue/90 transition-colors"
+              >
+                Complete Profile
+              </Link>
+            </div>
+          )}
+
           <div className="card">
             <h3 className="text-lg font-semibold text-theme-heading mb-4">
               Stats
