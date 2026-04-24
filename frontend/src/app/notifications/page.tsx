@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import { Bell, CheckSquare, Trash2 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useSocket } from "@/context/SocketContext";
 import { Notification, PaginatedResponse } from "@/types";
 import NotificationItem from "@/components/NotificationItem";
 import Pagination from "@/components/Pagination";
@@ -13,11 +14,19 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api";
 
 export default function NotificationsPage() {
   const { token, user } = useAuth();
+  const { liveNotifications, dismissLiveNotification } = useSocket();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [markingAll, setMarkingAll] = useState(false);
+  const mergedNotifications = [
+    ...liveNotifications,
+    ...notifications.filter(
+      (n) => !liveNotifications.some((ln) => ln.id === n.id),
+    ),
+  ];
+
   const limit = 10;
 
   // Track which notification IDs have already been queued for marking as read
@@ -154,6 +163,7 @@ export default function NotificationsPage() {
         headers: { Authorization: `Bearer ${token}` },
       });
       setNotifications((prev) => prev.filter((n) => n.id !== notificationId));
+      dismissLiveNotification(notificationId);
       setTotal((t) => Math.max(0, t - 1));
     } catch (error) {
       console.error("Failed to delete notification:", error);
@@ -225,10 +235,10 @@ export default function NotificationsPage() {
             <div className="w-12 h-12 border-4 border-stellar-blue border-t-transparent rounded-full animate-spin mx-auto mb-4" />
             <p className="text-theme-text">Loading notifications...</p>
           </div>
-        ) : notifications.length > 0 ? (
+        ) : mergedNotifications.length > 0 ? (
           <>
             <div className="divide-y divide-theme-border">
-              {notifications.map((notification) => (
+              {mergedNotifications.map((notification) => (
                 <div
                   key={notification.id}
                   ref={setRowRef(notification.id)}
