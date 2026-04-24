@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Bell } from "lucide-react";
 import axios from "axios";
 import { useSocket } from "@/context/SocketContext";
@@ -13,6 +14,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api";
 export default function NotificationBell() {
     const { socket } = useSocket();
     const { token, user } = useAuth();
+    const pathname = usePathname();
     const [unreadCount, setUnreadCount] = useState(0);
 
     const fetchUnreadCount = useCallback(async () => {
@@ -33,6 +35,26 @@ export default function NotificationBell() {
         const interval = setInterval(fetchUnreadCount, 30000);
         return () => clearInterval(interval);
     }, [fetchUnreadCount]);
+
+    useEffect(() => {
+        if (pathname === "/notifications") {
+            setUnreadCount(0);
+        }
+    }, [pathname]);
+
+    const handleOpenNotifications = useCallback(async () => {
+        if (!token) return;
+        setUnreadCount(0);
+        try {
+            await axios.put(
+                `${API}/notifications/read-all`,
+                {},
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+        } catch {
+            // keep UI responsive; unread count will reconcile on next poll/socket update
+        }
+    }, [token]);
 
     useEffect(() => {
         if (!socket) return;
@@ -61,6 +83,7 @@ export default function NotificationBell() {
     return (
         <Link
             href="/notifications"
+            onClick={handleOpenNotifications}
             className="relative p-2 rounded-lg text-theme-text hover:text-theme-heading hover:bg-theme-border/50 transition-colors"
             aria-label="Notifications"
             id="notification-bell"

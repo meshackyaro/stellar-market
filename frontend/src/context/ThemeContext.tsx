@@ -12,10 +12,18 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof document !== "undefined") {
+      const ssrTheme = document.documentElement.getAttribute("data-theme");
+      if (ssrTheme === "dark" || ssrTheme === "light") {
+        return ssrTheme;
+      }
+    }
+    return "light";
+  });
 
   useEffect(() => {
-    // Check localStorage or system preference
+    // Keep client state aligned with the pre-hydration theme from layout script
     const savedTheme = localStorage.getItem("theme") as Theme | null;
     const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
       ? "dark"

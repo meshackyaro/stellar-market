@@ -13,6 +13,13 @@ import {
 
 const router = Router();
 const prisma = new PrismaClient();
+const indexerCursorState: {
+  cursor: string | null;
+  updatedAt: string;
+} = {
+  cursor: null,
+  updatedAt: new Date().toISOString(),
+};
 
 /**
  * Request XDR to create a job on-chain.
@@ -428,5 +435,30 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
 
   res.json({ message: "Transaction confirmed and database updated." });
 }));
+
+/**
+ * Expose/track indexer cursor state for escrow event sync workers.
+ */
+router.get(
+  "/indexer/cursor",
+  authenticate,
+  asyncHandler(async (_req: AuthRequest, res: Response) => {
+    res.json(indexerCursorState);
+  }),
+);
+
+router.put(
+  "/indexer/cursor",
+  authenticate,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const cursor = typeof req.body?.cursor === "string" ? req.body.cursor.trim() : "";
+    if (!cursor) {
+      return res.status(400).json({ error: "cursor is required." });
+    }
+    indexerCursorState.cursor = cursor;
+    indexerCursorState.updatedAt = new Date().toISOString();
+    return res.json(indexerCursorState);
+  }),
+);
 
 export default router;
