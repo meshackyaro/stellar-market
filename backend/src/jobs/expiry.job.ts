@@ -1,4 +1,4 @@
-import { PrismaClient, JobStatus, EscrowStatus } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { NotificationService } from "../services/notification.service";
 
 const prisma = new PrismaClient();
@@ -11,18 +11,18 @@ async function expireJobs(): Promise<void> {
 
   try {
     // 1. Open jobs past deadline → mark EXPIRED and notify client
-    const openExpired = await prisma.job.findMany({
+    const openExpired = await (prisma.job as any).findMany({
       where: {
-        status: JobStatus.OPEN,
+        status: "OPEN",
         deadline: { lt: now },
       },
       select: { id: true, title: true, clientId: true },
     });
 
     for (const job of openExpired) {
-      await prisma.job.update({
+      await (prisma.job as any).update({
         where: { id: job.id },
-        data: { status: JobStatus.EXPIRED },
+        data: { status: "EXPIRED" },
       });
 
       await NotificationService.sendNotification({
@@ -36,11 +36,11 @@ async function expireJobs(): Promise<void> {
     }
 
     // 2. Funded jobs past deadline → call expire_job on-chain then mark EXPIRED
-    const fundedExpired = await prisma.job.findMany({
+    const fundedExpired = await (prisma.job as any).findMany({
       where: {
-        escrowStatus: EscrowStatus.FUNDED,
+        escrowStatus: "FUNDED",
         deadline: { lt: now },
-        status: { notIn: [JobStatus.COMPLETED, JobStatus.CANCELLED, JobStatus.EXPIRED] },
+        status: { notIn: ["COMPLETED", "CANCELLED", "EXPIRED"] },
       },
       select: { id: true, title: true, clientId: true, contractJobId: true },
     });
@@ -48,15 +48,14 @@ async function expireJobs(): Promise<void> {
     for (const job of fundedExpired) {
       try {
         if (job.contractJobId) {
-          // Placeholder: the on-chain expire_job entry point will be called here
-          // once the contract expiry companion issue is merged.
-          // await ContractService.buildExpireJobTx(job.contractJobId);
+          // Placeholder: on-chain expire_job will be wired here once the
+          // companion contract issue is merged.
           console.log(`[ExpiryJob] expire_job stub for contract job ${job.contractJobId}`);
         }
 
-        await prisma.job.update({
+        await (prisma.job as any).update({
           where: { id: job.id },
-          data: { status: JobStatus.EXPIRED },
+          data: { status: "EXPIRED" },
         });
 
         await NotificationService.sendNotification({
@@ -81,7 +80,6 @@ async function expireJobs(): Promise<void> {
 }
 
 export function startExpiryJob(): void {
-  // Run once immediately at startup, then every hour
   expireJobs();
   setInterval(expireJobs, ONE_HOUR_MS);
   console.log("[ExpiryJob] Scheduled — runs every hour");

@@ -31,7 +31,7 @@ router.get(
         prisma.job.count({ where: { status: JobStatus.COMPLETED } }),
         prisma.user.count({ where: { role: UserRole.FREELANCER } }),
         prisma.user.count({ where: { role: UserRole.CLIENT } }),
-        prisma.transaction.aggregate({ _sum: { amount: true } }),
+        (prisma as any).transaction.aggregate({ _sum: { amount: true } }),
       ]);
 
       const totalVolumeXLM = volumeAgg._sum.amount ?? 0;

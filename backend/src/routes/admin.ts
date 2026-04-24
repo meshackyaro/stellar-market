@@ -1,5 +1,5 @@
 import { Router, Response } from "express";
-import { PrismaClient, UserRole, DisputeStatus, ReportStatus, ReportTargetType } from "@prisma/client";
+import { PrismaClient, UserRole, DisputeStatus } from "@prisma/client";
 import { AuthRequest, requireAdmin } from "../middleware/auth";
 import {
     flagJobSchema,
@@ -482,6 +482,8 @@ router.post("/users/:id/restore", async (req: AuthRequest, res: Response): Promi
     }
 });
 
+const REPORT_STATUSES = ["PENDING", "REVIEWED", "DISMISSED"] as const;
+
 /**
  * GET /api/admin/reports
  * List all reports, filterable by status and targetType.
@@ -493,11 +495,11 @@ router.get("/reports", async (req: AuthRequest, res: Response): Promise<void> =>
         const skip = (page - 1) * limit;
 
         const where: any = {};
-        if (req.query.status) where.status = req.query.status as ReportStatus;
-        if (req.query.targetType) where.targetType = req.query.targetType as ReportTargetType;
+        if (req.query.status) where.status = req.query.status;
+        if (req.query.targetType) where.targetType = req.query.targetType;
 
         const [reports, total] = await Promise.all([
-            prisma.report.findMany({
+            (prisma as any).report.findMany({
                 where,
                 skip,
                 take: limit,
@@ -506,7 +508,7 @@ router.get("/reports", async (req: AuthRequest, res: Response): Promise<void> =>
                     reporter: { select: { id: true, username: true } },
                 },
             }),
-            prisma.report.count({ where }),
+            (prisma as any).report.count({ where }),
         ]);
 
         res.json({
@@ -527,24 +529,24 @@ router.patch("/reports/:id", async (req: AuthRequest, res: Response): Promise<vo
     try {
         const id = req.params.id as string;
         const { status, suspend, suspendReason } = z.object({
-            status: z.nativeEnum(ReportStatus),
+            status: z.enum(REPORT_STATUSES),
             suspend: z.boolean().optional(),
             suspendReason: z.string().optional(),
         }).parse(req.body);
 
-        const report = await prisma.report.findUnique({ where: { id } });
+        const report = await (prisma as any).report.findUnique({ where: { id } });
         if (!report) {
             res.status(404).json({ error: "Report not found" });
             return;
         }
 
-        const updated = await prisma.report.update({
+        const updated = await (prisma as any).report.update({
             where: { id },
             data: { status },
         });
 
-        if (suspend && report.targetType === ReportTargetType.USER) {
-            await prisma.user.update({
+        if (suspend && report.targetType === "USER") {
+            await (prisma.user as any).update({
                 where: { id: report.targetId },
                 data: {
                     isSuspended: true,

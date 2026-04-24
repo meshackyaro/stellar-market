@@ -1,5 +1,5 @@
 import { Router, Response } from "express";
-import { PrismaClient, ReportTargetType, ReportStatus } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { authenticate, AuthRequest } from "../middleware/auth";
@@ -10,7 +10,6 @@ const prisma = new PrismaClient();
 
 const AUTO_FLAG_THRESHOLD = 3;
 
-// 5 reports per user per hour
 const reportRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
@@ -22,8 +21,10 @@ const reportRateLimiter = rateLimit({
   },
 });
 
+const TARGET_TYPES = ["JOB", "USER", "MESSAGE"] as const;
+
 const createReportSchema = z.object({
-  targetType: z.nativeEnum(ReportTargetType),
+  targetType: z.enum(TARGET_TYPES),
   targetId: z.string().min(1),
   reason: z.string().min(10, "Reason must be at least 10 characters").max(1000),
 });
@@ -44,7 +45,7 @@ router.post(
 
     const { targetType, targetId, reason } = body.data;
 
-    const report = await prisma.report.create({
+    const report = await (prisma as any).report.create({
       data: {
         reporterId: req.userId!,
         targetType,
@@ -54,17 +55,13 @@ router.post(
     });
 
     // Auto-flag user when they accumulate >= AUTO_FLAG_THRESHOLD pending reports
-    if (targetType === ReportTargetType.USER) {
-      const pendingCount = await prisma.report.count({
-        where: {
-          targetId,
-          targetType: ReportTargetType.USER,
-          status: ReportStatus.PENDING,
-        },
+    if (targetType === "USER") {
+      const pendingCount = await (prisma as any).report.count({
+        where: { targetId, targetType: "USER", status: "PENDING" },
       });
 
       if (pendingCount >= AUTO_FLAG_THRESHOLD) {
-        await prisma.user.update({
+        await (prisma.user as any).update({
           where: { id: targetId },
           data: {
             isFlagged: true,
