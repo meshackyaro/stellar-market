@@ -177,6 +177,7 @@ enum DataKey {
     JobCount,
     Admin, // Legacy single admin
     Paused,
+    AllowedTokens,
     RevisionProposal(u64),
     ProposalExpiry,
     MultiSigSigners,     // Vec<Address>
@@ -264,12 +265,65 @@ impl EscrowContract {
             .set(&symbol_short!("TRE"), &treasury);
         env.storage().instance().set(&symbol_short!("FEE"), &fee_bps);
         env.storage().instance().set(&DataKey::Paused, &false);
+        let allowed_tokens: Vec<Address> = Vec::new(&env);
+        env.storage().instance().set(&DataKey::AllowedTokens, &allowed_tokens);
         env.storage()
             .instance()
             .set(&DataKey::ProposalExpiry, &proposal_expiry_secs);
         bump_job_count_ttl(&env);
 
         Ok(())
+    }
+
+    pub fn add_allowed_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), EscrowError> {
+        admin.require_auth();
+        if !is_signer(&env, &admin) {
+            return Err(EscrowError::NotAdmin);
+        }
+
+        let mut allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedTokens)
+            .unwrap_or(Vec::new(&env));
+        if !allowed.iter().any(|t| t == token) {
+            allowed.push_back(token.clone());
+            env.storage().instance().set(&DataKey::AllowedTokens, &allowed);
+        }
+        Ok(())
+    }
+
+    pub fn remove_allowed_token(
+        env: Env,
+        admin: Address,
+        token: Address,
+    ) -> Result<(), EscrowError> {
+        admin.require_auth();
+        if !is_signer(&env, &admin) {
+            return Err(EscrowError::NotAdmin);
+        }
+
+        let mut allowed: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedTokens)
+            .unwrap_or(Vec::new(&env));
+        if let Some(index) = allowed.iter().position(|t| t == token) {
+            allowed.remove(index as u32);
+            env.storage().instance().set(&DataKey::AllowedTokens, &allowed);
+        }
+        Ok(())
+    }
+
+    pub fn get_allowed_tokens(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowedTokens)
+            .unwrap_or(Vec::new(&env))
     }
 
 
@@ -445,6 +499,15 @@ impl EscrowContract {
     ) -> Result<u64, EscrowError> {
         client.require_auth();
         require_not_paused(&env)?;
+
+        let allowed_tokens = Self::get_allowed_tokens(env.clone());
+        if !allowed_tokens.is_empty()
+            && !allowed_tokens
+            .iter()
+            .any(|allowed| allowed == token.clone())
+        {
+            return Err(EscrowError::TokenNotAllowed);
+        }
 
         if job_deadline <= env.ledger().timestamp() {
             return Err(EscrowError::InvalidDeadline);

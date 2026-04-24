@@ -81,7 +81,9 @@ interface ExtendedApplication extends Application {
 export default function DashboardPage() {
   const { user, token, isLoading } = useAuth();
   const { socket } = useSocket();
-  const isClient = user?.role === "CLIENT";
+  const isClientByProfile = user?.role === "CLIENT";
+  const [inferredRole, setInferredRole] = useState<"CLIENT" | "FREELANCER" | null>(null);
+  const isClient = inferredRole ? inferredRole === "CLIENT" : isClientByProfile;
 
   const clientTabs = ["My Posted Jobs", "Applicants to Review", "Active Disputes", "Messages"];
   const freelancerTabs = ["My Applications", "Active Work", "Upcoming Milestones", "Messages"];
@@ -103,6 +105,9 @@ export default function DashboardPage() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [milestones, setMilestones] = useState<MilestoneItem[]>([]);
+  const [submittedMilestones, setSubmittedMilestones] = useState<MilestoneItem[]>([]);
+  const [earningsChartData, setEarningsChartData] = useState<Array<{ name: string; amount: number }>>([]);
+  const [spendingChartData, setSpendingChartData] = useState<Array<{ name: string; amount: number }>>([]);
   const [dataLoading, setDataLoading] = useState(true);
 
   // Withdraw-application state (freelancer)
@@ -119,16 +124,32 @@ export default function DashboardPage() {
     const headers = { Authorization: `Bearer ${token}` };
 
     try {
-      if (isClient) {
-        const [jobsRes, appsRes, disputesRes] = await Promise.all([
-          axios.get<PaginatedResponse<Job>>(`${API}/jobs?page=1&limit=100`, { headers }).catch(() => null),
-          axios.get<PaginatedResponse<Application>>(`${API}/applications?page=1&limit=100`, { headers }).catch(() => null),
-          axios.get<PaginatedResponse<Dispute>>(`${API}/disputes?page=1&limit=100`, { headers }).catch(() => null),
-        ]);
+      const [jobsRes, appsRes, disputesRes] = await Promise.all([
+        axios.get<PaginatedResponse<Job>>(`${API}/jobs?page=1&limit=100`, { headers }).catch(() => null),
+        axios.get<PaginatedResponse<Application>>(`${API}/applications?page=1&limit=100`, { headers }).catch(() => null),
+        axios.get<PaginatedResponse<Dispute>>(`${API}/disputes?page=1&limit=100`, { headers }).catch(() => null),
+      ]);
+      const allJobs = jobsRes?.data?.data ?? [];
+      const allApps = appsRes?.data?.data ?? [];
+      const allDisputes = disputesRes?.data?.data ?? [];
+      const clientJobs = allJobs.filter((j: Job) => j.client?.id === user.id);
+      const freelancerJobs = allJobs.filter((j: Job) => j.freelancer?.id === user.id);
+      const freelancerApps = allApps.filter((a: Application) => a.freelancer?.id === user.id);
 
-        const jobs = jobsRes?.data?.data?.filter((j: Job) => j.client?.id === user.id) ?? [];
-        const apps = appsRes?.data?.data ?? [];
-        const disps = disputesRes?.data?.data ?? [];
+      const resolvedRole: "CLIENT" | "FREELANCER" =
+        freelancerJobs.length > 0 || freelancerApps.length > 0
+          ? "FREELANCER"
+          : clientJobs.length > 0
+            ? "CLIENT"
+            : isClientByProfile
+              ? "CLIENT"
+              : "FREELANCER";
+      setInferredRole(resolvedRole);
+
+      if (resolvedRole === "CLIENT") {
+        const jobs = clientJobs;
+        const apps = allApps;
+        const disps = allDisputes;
 
         setPostedJobs(jobs);
         setPendingApplicants(apps.filter((a: Application) => a.status === "PENDING"));
@@ -145,14 +166,16 @@ export default function DashboardPage() {
           totalSpent: jobs.filter((j: Job) => j.status === "COMPLETED").reduce((sum: number, j: Job) => sum + j.budget, 0),
           rating: user.averageRating ?? 0,
         }));
+        const spendByMonth = jobs
+          .filter((j: Job) => j.status === "COMPLETED")
+          .reduce<Record<string, number>>((acc, j) => {
+            const key = new Date(j.updatedAt ?? j.createdAt).toLocaleString(undefined, { month: "short" });
+            acc[key] = (acc[key] ?? 0) + j.budget;
+            return acc;
+          }, {});
+        setSpendingChartData(Object.entries(spendByMonth).map(([name, amount]) => ({ name, amount })));
       } else {
-        const [appsRes, jobsRes] = await Promise.all([
-          axios.get<PaginatedResponse<Application>>(`${API}/applications?freelancerId=${user.id}&page=1&limit=100`, { headers }).catch(() => null),
-          axios.get<PaginatedResponse<Job>>(`${API}/jobs?page=1&limit=100`, { headers }).catch(() => null),
-        ]);
-
-        const apps = appsRes?.data?.data ?? [];
-        const allJobs = jobsRes?.data?.data ?? [];
+        const apps = freelancerApps;
         const myActiveJobs = allJobs.filter((j: Job) => j.freelancer?.id === user.id && j.status === "IN_PROGRESS");
 
         setApplications(apps);
@@ -164,7 +187,18 @@ export default function DashboardPage() {
             .filter((m) => m.status === "PENDING" || m.status === "IN_PROGRESS")
             .map((m) => ({ ...m, job: { title: j.title } }))
         );
-        setMilestones(upcomingMilestones);
+        setMilestones(
+          upcomingMilestones.sort((a, b) =>
+            new Date(a.contractDeadline ?? 0).getTime() - new Date(b.contractDeadline ?? 0).getTime(),
+          ),
+        );
+        setSubmittedMilestones(
+          myActiveJobs.flatMap((j: Job) =>
+            (j.milestones ?? [])
+              .filter((m) => m.status === "SUBMITTED")
+              .map((m) => ({ ...m, job: { title: j.title } })),
+          ),
+        );
 
         const completedJobs = allJobs.filter((j: Job) => j.freelancer?.id === user.id && j.status === "COMPLETED");
 
@@ -179,13 +213,19 @@ export default function DashboardPage() {
           pendingPayout: myActiveJobs.reduce((sum: number, j: Job) => sum + j.budget, 0),
           rating: user.averageRating ?? 0,
         }));
+        const earnByMonth = completedJobs.reduce<Record<string, number>>((acc, j) => {
+          const key = new Date(j.updatedAt ?? j.createdAt).toLocaleString(undefined, { month: "short" });
+          acc[key] = (acc[key] ?? 0) + j.budget;
+          return acc;
+        }, {});
+        setEarningsChartData(Object.entries(earnByMonth).map(([name, amount]) => ({ name, amount })));
       }
     } catch (err) {
       console.error("Failed to fetch dashboard data:", err);
     } finally {
       setDataLoading(false);
     }
-  }, [token, user, isClient]);
+  }, [token, user, isClient, isClientByProfile]);
 
   const fetchPendingApplicants = useCallback(async () => {
     if (!token || !user?.id || !isClient) return;
@@ -226,6 +266,19 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
+
+  useEffect(() => {
+    if (!socket) return;
+    const refresh = () => {
+      fetchDashboardData();
+    };
+    socket.on("notification:new", refresh);
+    socket.on("job:updated", refresh);
+    return () => {
+      socket.off("notification:new", refresh);
+      socket.off("job:updated", refresh);
+    };
+  }, [socket, fetchDashboardData]);
 
   const handleWithdraw = async (appId: string) => {
     setWithdrawingId(appId);
@@ -441,6 +494,20 @@ export default function DashboardPage() {
 
           {!isClient && activeTab === "Upcoming Milestones" && (
             <div className="space-y-4">
+              <div className="card">
+                <h3 className="font-semibold text-theme-heading mb-3">Milestone payout trend</h3>
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={earningsChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="amount" fill="#5b8cff" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
               {milestones.length > 0 ? (
                 milestones.map((milestone) => (
                   <Link key={milestone.id} href={`/jobs/${milestone.jobId}`} className="card flex items-center justify-between hover:border-stellar-blue/30 transition-colors">
@@ -466,12 +533,42 @@ export default function DashboardPage() {
                   <p className="text-theme-text">Milestone deadlines will appear here once you have active jobs.</p>
                 </div>
               )}
+              {submittedMilestones.length > 0 && (
+                <div className="card">
+                  <h3 className="font-semibold text-theme-heading mb-3">Submitted milestones awaiting client approval</h3>
+                  <div className="space-y-2">
+                    {submittedMilestones.map((milestone) => (
+                      <Link key={milestone.id} href={`/jobs/${milestone.jobId}`} className="flex items-center justify-between rounded-lg border border-theme-border px-3 py-2 hover:border-stellar-blue/30">
+                        <div>
+                          <p className="text-sm font-medium text-theme-heading">{milestone.title}</p>
+                          <p className="text-xs text-theme-text">{milestone.job?.title}</p>
+                        </div>
+                        <StatusBadge status="SUBMITTED" />
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* ── Client tab content ── */}
           {isClient && activeTab === "My Posted Jobs" && (
             <div className="space-y-4">
+              <div className="card">
+                <h3 className="font-semibold text-theme-heading mb-3">Milestone spending overview</h3>
+                <div className="h-56">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={spendingChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="currentColor" opacity={0.15} />
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip />
+                      <Bar dataKey="amount" fill="#9b6bff" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
               {postedJobs.length > 0 ? (
                 postedJobs.map((job) => (
                   <Link key={job.id} href={`/jobs/${job.id}`} className="card flex items-center justify-between hover:border-stellar-blue/30 transition-colors">

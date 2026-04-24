@@ -118,6 +118,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "AllowedTokens"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "MultiSigProposal"
                             },
                             {
