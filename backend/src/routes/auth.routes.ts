@@ -122,6 +122,9 @@ router.post(
 
     const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
 
+    const rawToken = generateToken();
+    const hashed = hashToken(rawToken);
+
     const user = await prisma.user.create({
       data: {
         walletAddress: stellarAddress,
@@ -129,8 +132,14 @@ router.post(
         username: name,
         password: hashedPassword,
         role: role ?? "FREELANCER",
+        emailVerified: false,
+        emailVerificationToken: hashed,
       },
     });
+
+    if (email) {
+      await sendVerificationEmail(email, rawToken);
+    }
 
     const token = jwt.sign({ userId: user.id }, config.jwtSecret, {
       expiresIn: "7d",
@@ -143,6 +152,7 @@ router.post(
         username: user.username,
         email: user.email,
         role: user.role,
+        emailVerified: user.emailVerified,
       },
       token,
     });
