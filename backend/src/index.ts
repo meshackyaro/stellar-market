@@ -8,6 +8,7 @@ import { globalRateLimiter, authRateLimiter, forgotPasswordRateLimiter, writeRat
 import { sanitizeInput } from "./middleware/sanitize";
 import { errorHandler } from "./middleware/error";
 import { initSocket } from "./socket";
+import { startExpiryJob } from "./jobs/expiry.job";
 
 const app = express();
 import { swaggerUi, swaggerSpec } from "./config/swagger";
@@ -71,6 +72,7 @@ app.use(errorHandler);
 
 httpServer.listen(config.port, () => {
   console.log(`StellarMarket API running on port ${config.port}`);
+  startExpiryJob();
 });
 
 export { app, httpServer };
