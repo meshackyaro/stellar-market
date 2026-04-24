@@ -115,6 +115,7 @@ enum DataKey {
     EscrowContract,
     Paused,
     SlashAmount,
+    JobDispute(u64),
 }
 
 fn require_not_paused(env: &Env) -> Result<(), DisputeError> {
@@ -187,6 +188,14 @@ fn bump_dispute_count_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+}
+
+fn bump_job_dispute_ttl(env: &Env, job_id: u64) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::JobDispute(job_id),
+        MIN_TTL_THRESHOLD,
+        MIN_TTL_EXTEND_TO,
+    );
 }
 
 // Import Job struct from escrow for cross-contract calls
@@ -535,6 +544,12 @@ impl DisputeContract {
             .set(&DataKey::Votes(count), &Vec::<Vote>::new(&env));
         bump_votes_ttl(&env, count);
 
+        // Maintain job → dispute_id mapping so callers can look up a dispute by job_id
+        env.storage()
+            .persistent()
+            .set(&DataKey::JobDispute(job_id), &count);
+        bump_job_dispute_ttl(&env, job_id);
+
         // Emit event
         env.events().publish(
             (symbol_short!("dispute"), symbol_short!("raised")),
@@ -822,6 +837,27 @@ impl DisputeContract {
             .ok_or(DisputeError::DisputeNotFound)?;
         bump_dispute_ttl(&env, dispute_id);
         Ok(dispute)
+    }
+
+    /// Look up the dispute associated with a given job ID.
+    /// Returns `None` when no dispute has ever been raised for the job.
+    /// When multiple disputes existed (e.g. after a cooldown period), this
+    /// returns the most recent one because `raise_dispute` always overwrites
+    /// the `JobDispute` mapping with the latest dispute ID.
+    pub fn get_dispute_by_job(env: Env, job_id: u64) -> Option<Dispute> {
+        let dispute_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::JobDispute(job_id))?;
+        bump_job_dispute_ttl(&env, job_id);
+
+        let dispute: Dispute = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(dispute_id))?;
+        bump_dispute_ttl(&env, dispute_id);
+
+        Some(dispute)
     }
 
     /// Get all votes for a dispute.
