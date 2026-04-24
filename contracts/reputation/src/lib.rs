@@ -190,6 +190,8 @@ enum DataKey {
     MultiSigThreshold,
     MultiSigProposal(u64),
     MultiSigProposalCount,
+    Leaderboard,
+    StakeBalance(Address),
 }
 
 fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
@@ -393,6 +395,21 @@ impl ReputationContract {
         let token_client = token::Client::new(&env, &job.token);
         token_client.transfer(&reviewer, &env.current_contract_address(), &stake_weight);
 
+        // Track stake balance for withdrawal
+        let balance_key = DataKey::StakeBalance(reviewer.clone());
+        let mut balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&balance_key)
+            .unwrap_or(0);
+        balance += stake_weight;
+        env.storage().persistent().set(&balance_key, &balance);
+        env.storage().persistent().extend_ttl(
+            &balance_key,
+            MIN_TTL_THRESHOLD,
+            MIN_TTL_EXTEND_TO,
+        );
+
         let weight = if stake_weight > 0 {
             stake_weight as u64
         } else {
@@ -443,6 +460,9 @@ impl ReputationContract {
         // Mark as reviewed
         env.storage().persistent().set(&review_key, &true);
         bump_review_exists_ttl(&env, &reviewer, &reviewee, job_id);
+
+        // Update leaderboard with the reviewee's new rating
+        Self::update_leaderboard(&env, &reviewee);
 
         // Check for tier upgrade and award badge if necessary
         let new_avg_rating = Self::get_average_rating(env.clone(), reviewee.clone()).unwrap_or(0);
@@ -1150,5 +1170,114 @@ impl ReputationContract {
             }
             None => Vec::new(&env),
         }
+    }
+
+    /// Claim staked tokens back after a lockup period. Allows reviewers to withdraw
+    /// their stakes. Transfers the claimed amount from the contract back to the reviewer.
+    pub fn claim_stake(env: Env, reviewer: Address, amount: i128) -> Result<(), ReputationError> {
+        reviewer.require_auth();
+        require_not_paused(&env)?;
+
+        let balance_key = DataKey::StakeBalance(reviewer.clone());
+        let balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&balance_key)
+            .unwrap_or(0);
+
+        if balance < amount || amount <= 0 {
+            return Err(ReputationError::BelowMinStake);
+        }
+
+        // Update balance
+        let new_balance = balance - amount;
+        if new_balance > 0 {
+            env.storage().persistent().set(&balance_key, &new_balance);
+        } else {
+            env.storage().persistent().remove(&balance_key);
+        }
+
+        // Transfer tokens back to reviewer
+        let token_client = token::Client::new(&env, &env.current_contract_address());
+        token_client.transfer(&env.current_contract_address(), &reviewer, &amount);
+
+        env.events().publish(
+            (symbol_short!("reput"), symbol_short!("claim")),
+            (reviewer, amount),
+        );
+
+        Ok(())
+    }
+
+    /// Get the top N users by average rating. Returns a vector of (Address, average_rating)
+    /// tuples sorted by rating (highest first), up to top 50.
+    pub fn get_leaderboard(env: Env) -> Vec<(Address, u64)> {
+        let leaderboard_key = DataKey::Leaderboard;
+        let leaderboard: Option<Vec<(Address, u64)>> = env.storage().instance().get(&leaderboard_key);
+
+        match leaderboard {
+            Some(list) => {
+                env.storage()
+                    .instance()
+                    .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+                list
+            }
+            None => Vec::new(&env),
+        }
+    }
+
+    /// Internal function to update the leaderboard after a review is submitted.
+    /// Maintains a sorted list of top 50 users by average rating.
+    fn update_leaderboard(env: &Env, reviewee: &Address) {
+        const TOP_N: u32 = 50;
+
+        let avg_rating = match Self::get_average_rating(env.clone(), reviewee.clone()) {
+            Ok(rating) => rating,
+            Err(_) => return, // Skip if reputation not found
+        };
+
+        let leaderboard_key = DataKey::Leaderboard;
+        let mut leaderboard: Vec<(Address, u64)> = env
+            .storage()
+            .instance()
+            .get(&leaderboard_key)
+            .unwrap_or(Vec::new(env));
+
+        // Remove existing entry for this user if present
+        let mut idx: u32 = 0;
+        while idx < leaderboard.len() {
+            if leaderboard.get(idx).unwrap().0 == *reviewee {
+                leaderboard.remove(idx);
+                break;
+            }
+            idx += 1;
+        }
+
+        // Insert at correct position (descending by rating)
+        let mut inserted = false;
+        let mut pos: u32 = 0;
+        while pos < leaderboard.len() {
+            let rating = leaderboard.get(pos).unwrap().1;
+            if avg_rating > rating {
+                leaderboard.insert(pos, (reviewee.clone(), avg_rating));
+                inserted = true;
+                break;
+            }
+            pos += 1;
+        }
+
+        if !inserted && leaderboard.len() < TOP_N {
+            leaderboard.push_back((reviewee.clone(), avg_rating));
+        }
+
+        // Truncate to top N
+        while leaderboard.len() > TOP_N {
+            leaderboard.pop_back();
+        }
+
+        env.storage().instance().set(&leaderboard_key, &leaderboard);
+        env.storage()
+            .instance()
+            .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
     }
 }
