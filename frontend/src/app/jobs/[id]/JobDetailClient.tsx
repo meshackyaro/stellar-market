@@ -55,6 +55,9 @@ export default function JobDetailClient() {
   const [actioningMilestoneId, setActioningMilestoneId] = useState<
     string | null
   >(null);
+  const [confirmingMilestoneId, setConfirmingMilestoneId] = useState<
+    string | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [applyModalOpen, setApplyModalOpen] = useState(false);
   const [disputeModalOpen, setDisputeModalOpen] = useState(false);
@@ -399,6 +402,18 @@ export default function JobDetailClient() {
   const handleApproveMilestone = async (milestoneId: string) => {
     setError(null);
     setActioningMilestoneId(milestoneId);
+    const previousMilestones = job?.milestones ?? [];
+    setJob((prev) =>
+      prev
+        ? {
+            ...prev,
+            milestones: prev.milestones.map((m) =>
+              m.id === milestoneId ? { ...m, status: "APPROVED" } : m,
+            ),
+          }
+        : prev,
+    );
+    setConfirmingMilestoneId(milestoneId);
     try {
       const token =
         localStorage.getItem("stellarmarket_jwt") ??
@@ -433,8 +448,27 @@ export default function JobDetailClient() {
       await fetchJob();
       setRecentlyApprovedMilestoneId(milestoneId);
     } catch (err: unknown) {
+      // Roll back optimistic milestone status if on-chain confirmation fails.
+      setJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              milestones: prev.milestones.map((m) =>
+                m.id === milestoneId
+                  ? {
+                      ...m,
+                      status:
+                        previousMilestones.find((pm) => pm.id === milestoneId)
+                          ?.status ?? m.status,
+                    }
+                  : m,
+              ),
+            }
+          : prev,
+      );
       setError(err instanceof Error ? err.message : "Action failed.");
     } finally {
+      setConfirmingMilestoneId(null);
       setActioningMilestoneId(null);
     }
   };
@@ -689,6 +723,7 @@ export default function JobDetailClient() {
               onRequestRevision={(milestoneId) =>
                 void handleUpdateMilestoneStatus(milestoneId, "REJECTED")
               }
+              confirmingMilestoneId={confirmingMilestoneId}
             />
           </div>
 

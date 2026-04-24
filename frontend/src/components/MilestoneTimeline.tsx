@@ -14,6 +14,7 @@ type MilestoneTimelineProps = {
   onRequestRevision: (milestoneId: string) => void;
   actioningMilestoneId: string | null;
   recentlyApprovedMilestoneId: string | null;
+  confirmingMilestoneId?: string | null;
 };
 
 function getIndicatorClasses(status: Milestone["status"], approvedPulse: boolean) {
@@ -43,6 +44,7 @@ export default function MilestoneTimeline({
   onRequestRevision,
   actioningMilestoneId,
   recentlyApprovedMilestoneId,
+  confirmingMilestoneId,
 }: MilestoneTimelineProps) {
   const completedCount = milestones.filter((m) => m.status === "APPROVED").length;
   const totalCount = milestones.length;
@@ -106,6 +108,11 @@ export default function MilestoneTimeline({
                   </div>
 
                   <p className="text-sm text-theme-text mt-3">{milestone.description}</p>
+                  {confirmingMilestoneId === milestone.id && (
+                    <p className="text-xs text-stellar-blue mt-2">
+                      Confirming on-chain...
+                    </p>
+                  )}
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     {isFreelancerOnJob && milestone.status === "IN_PROGRESS" && (

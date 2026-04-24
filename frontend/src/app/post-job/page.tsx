@@ -1,37 +1,85 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Trash2, Tag, Loader2 } from "lucide-react";
 import axios from "axios";
+import { z } from "zod";
+import { useForm, useFieldArray } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/Toast";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
-interface MilestoneForm {
-  title: string;
-  description: string;
-  amount: string;
-}
+const milestoneSchema = z.object({
+  title: z.string().min(3, "Milestone title is too short"),
+  description: z.string().min(5, "Milestone description is too short"),
+  amount: z.string().refine((value) => Number.parseFloat(value) > 0, {
+    message: "Milestone amount must be greater than 0",
+  }),
+  deadline: z.string().refine((value) => {
+    if (!value) return false;
+    const dt = new Date(value);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return !Number.isNaN(dt.getTime()) && dt > today;
+  }, "Milestone deadline must be in the future"),
+});
+
+const jobSchema = z.object({
+  title: z.string().min(10, "Title must be at least 10 characters").max(100),
+  description: z
+    .string()
+    .min(50, "Description must be at least 50 characters")
+    .max(5000),
+  category: z.string().min(1, "Please select a category"),
+  deadline: z.string().refine((value) => {
+    if (!value) return false;
+    const dt = new Date(value);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return !Number.isNaN(dt.getTime()) && dt > today;
+  }, "Job deadline must be in the future"),
+  milestones: z
+    .array(milestoneSchema)
+    .min(1, "At least one milestone is required")
+    .max(20, "You can add up to 20 milestones"),
+});
+
+type JobFormValues = z.infer<typeof jobSchema>;
 
 export default function PostJobPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
   const { toast } = useToast();
 
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("");
-  const [deadline, setDeadline] = useState("");
   const [skills, setSkills] = useState<string[]>([]);
   const [skillInput, setSkillInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-
-  const [milestones, setMilestones] = useState<MilestoneForm[]>([
-    { title: "", description: "", amount: "" },
-  ]);
+  const {
+    register,
+    control,
+    handleSubmit,
+    watch,
+    formState: { errors },
+  } = useForm<JobFormValues>({
+    resolver: zodResolver(jobSchema),
+    mode: "onBlur",
+    defaultValues: {
+      title: "",
+      description: "",
+      category: "",
+      deadline: "",
+      milestones: [{ title: "", description: "", amount: "", deadline: "" }],
+    },
+  });
+  const { fields, append, remove } = useFieldArray({
+    control,
+    name: "milestones",
+  });
+  const milestones = watch("milestones");
 
   useEffect(() => {
     if (!isLoading && user !== null && user.role !== "CLIENT") {
@@ -55,24 +103,18 @@ export default function PostJobPage() {
   }
 
   const addMilestone = () => {
-    setMilestones([...milestones, { title: "", description: "", amount: "" }]);
+    append({ title: "", description: "", amount: "", deadline: "" });
   };
 
   const removeMilestone = (index: number) => {
-    if (milestones.length > 1) {
-      setMilestones(milestones.filter((_, i) => i !== index));
+    if (fields.length > 1) {
+      remove(index);
     }
   };
-
-  const updateMilestone = (index: number, field: keyof MilestoneForm, value: string) => {
-    const updated = [...milestones];
-    updated[index][field] = value;
-    setMilestones(updated);
-  };
-
-  const totalBudget = milestones.reduce(
-    (sum, m) => sum + (parseFloat(m.amount) || 0),
-    0
+  const totalBudget = useMemo(
+    () =>
+      milestones.reduce((sum, m) => sum + (Number.parseFloat(m.amount) || 0), 0),
+    [milestones],
   );
 
   const handleAddSkill = () => {
@@ -87,8 +129,7 @@ export default function PostJobPage() {
     setSkills(skills.filter((s) => s !== skill));
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const onSubmit = async (values: JobFormValues) => {
     setSubmitting(true);
     setError("");
 
@@ -98,25 +139,25 @@ export default function PostJobPage() {
       const res = await axios.post(
         `${API_URL}/jobs`,
         {
-          title,
-          description,
-          category,
-          deadline: new Date(deadline).toISOString(),
+          title: values.title,
+          description: values.description,
+          category: values.category,
+          deadline: new Date(values.deadline).toISOString(),
           skills,
           budget: totalBudget,
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
-      for (const m of milestones) {
+      for (const m of values.milestones) {
         await axios.post(
           `${API_URL}/milestones`,
           {
             jobId: res.data.id,
             title: m.title,
             description: m.description,
-            amount: parseFloat(m.amount),
-            dueDate: deadline,
+            amount: Number.parseFloat(m.amount),
+            dueDate: m.deadline,
           },
           { headers: { Authorization: `Bearer ${token}` } }
         );
@@ -142,7 +183,7 @@ export default function PostJobPage() {
         when a freelancer is accepted.
       </p>
 
-      <form className="space-y-6" onSubmit={handleSubmit}>
+      <form className="space-y-6" onSubmit={handleSubmit(onSubmit)}>
         {error && (
           <div className="p-3 rounded-lg bg-theme-error/10 border border-theme-error/20 text-theme-error text-sm">
             {error}
@@ -156,12 +197,13 @@ export default function PostJobPage() {
           </label>
           <input
             type="text"
-            required
             placeholder="e.g., Build Soroban DEX Frontend"
             className="input-field"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            {...register("title")}
           />
+          {errors.title && (
+            <p className="mt-1 text-xs text-theme-error">{errors.title.message}</p>
+          )}
         </div>
 
         {/* Description */}
@@ -170,13 +212,16 @@ export default function PostJobPage() {
             Description
           </label>
           <textarea
-            required
             rows={6}
             placeholder="Describe the project requirements, scope, and deliverables..."
             className="input-field resize-none"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            {...register("description")}
           />
+          {errors.description && (
+            <p className="mt-1 text-xs text-theme-error">
+              {errors.description.message}
+            </p>
+          )}
         </div>
 
         {/* Category */}
@@ -185,10 +230,8 @@ export default function PostJobPage() {
             Category
           </label>
           <select
-            required
             className="input-field"
-            value={category}
-            onChange={(e) => setCategory(e.target.value)}
+            {...register("category")}
           >
             <option value="">Select a category</option>
             <option value="Frontend">Frontend</option>
@@ -199,6 +242,9 @@ export default function PostJobPage() {
             <option value="Documentation">Documentation</option>
             <option value="DevOps">DevOps</option>
           </select>
+          {errors.category && (
+            <p className="mt-1 text-xs text-theme-error">{errors.category.message}</p>
+          )}
         </div>
 
         {/* Deadline */}
@@ -208,11 +254,12 @@ export default function PostJobPage() {
           </label>
           <input
             type="date"
-            required
             className="input-field"
-            value={deadline}
-            onChange={(e) => setDeadline(e.target.value)}
+            {...register("deadline")}
           />
+          {errors.deadline && (
+            <p className="mt-1 text-xs text-theme-error">{errors.deadline.message}</p>
+          )}
         </div>
 
         {/* Skills */}
@@ -276,8 +323,8 @@ export default function PostJobPage() {
           </div>
 
           <div className="space-y-4">
-            {milestones.map((milestone, index) => (
-              <div key={index} className="card relative">
+            {fields.map((field, index) => (
+              <div key={field.id} className="card relative">
                 <div className="flex items-center justify-between mb-3">
                   <span className="text-sm font-medium text-stellar-purple">
                     Milestone {index + 1}
@@ -297,29 +344,56 @@ export default function PostJobPage() {
                     type="text"
                     placeholder="Milestone title"
                     className="input-field"
-                    value={milestone.title}
-                    onChange={(e) => updateMilestone(index, "title", e.target.value)}
+                    {...register(`milestones.${index}.title`)}
                   />
+                  {errors.milestones?.[index]?.title && (
+                    <p className="text-xs text-theme-error">
+                      {errors.milestones[index]?.title?.message}
+                    </p>
+                  )}
                   <textarea
                     rows={2}
                     placeholder="Describe the deliverables for this milestone"
                     className="input-field resize-none"
-                    value={milestone.description}
-                    onChange={(e) => updateMilestone(index, "description", e.target.value)}
+                    {...register(`milestones.${index}.description`)}
                   />
+                  {errors.milestones?.[index]?.description && (
+                    <p className="text-xs text-theme-error">
+                      {errors.milestones[index]?.description?.message}
+                    </p>
+                  )}
                   <div className="relative">
                     <input
                       type="number"
                       placeholder="Amount (XLM)"
                       className="input-field"
-                      value={milestone.amount}
-                      onChange={(e) => updateMilestone(index, "amount", e.target.value)}
+                      {...register(`milestones.${index}.amount`)}
                     />
                   </div>
+                  {errors.milestones?.[index]?.amount && (
+                    <p className="text-xs text-theme-error">
+                      {errors.milestones[index]?.amount?.message}
+                    </p>
+                  )}
+                  <input
+                    type="date"
+                    className="input-field"
+                    {...register(`milestones.${index}.deadline`)}
+                  />
+                  {errors.milestones?.[index]?.deadline && (
+                    <p className="text-xs text-theme-error">
+                      {errors.milestones[index]?.deadline?.message}
+                    </p>
+                  )}
                 </div>
               </div>
             ))}
           </div>
+          {errors.milestones?.message && (
+            <p className="mt-2 text-xs text-theme-error">
+              {errors.milestones.message as string}
+            </p>
+          )}
         </div>
 
         {/* Total */}
