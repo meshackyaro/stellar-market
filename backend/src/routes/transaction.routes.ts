@@ -241,9 +241,621 @@ router.get(
 );
 
 /**
- * GET /api/transactions/summary/stats
- * Get total earnings and spent for authenticated user
+ * GET /api/transactions/history
+ * Get comprehensive on-chain transaction history for authenticated user
+ * Enhanced version with better analytics and filtering
  */
+router.get(
+  "/history",
+  authenticate,
+  validate({
+    query: z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(100).default(20),
+      type: z
+        .enum(["DEPOSIT", "RELEASE", "REFUND", "DISPUTE_PAYOUT"])
+        .optional(),
+      direction: z.enum(["incoming", "outgoing", "all"]).default("all"),
+      dateFrom: z.string().optional(),
+      dateTo: z.string().optional(),
+      minAmount: z.coerce.number().optional(),
+      maxAmount: z.coerce.number().optional(),
+      jobId: z.string().optional(),
+      tokenAddress: z.string().optional(),
+      includeAnalytics: z.coerce.boolean().default(false),
+    }),
+  }),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.userId },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const {
+        page = 1,
+        limit = 20,
+        type,
+        direction = "all",
+        dateFrom,
+        dateTo,
+        minAmount,
+        maxAmount,
+        jobId,
+        tokenAddress,
+        includeAnalytics = false,
+      } = req.query as any;
+
+      const skip = (Number(page) - 1) * Number(limit);
+
+      // Build base filter
+      const where: any = {};
+
+      // Filter by direction (incoming/outgoing)
+      if (direction === "incoming") {
+        where.toAddress = user.walletAddress;
+      } else if (direction === "outgoing") {
+        where.fromAddress = user.walletAddress;
+      } else {
+        // All transactions (incoming or outgoing)
+        where.OR = [
+          { fromAddress: user.walletAddress },
+          { toAddress: user.walletAddress },
+        ];
+      }
+
+      // Additional filters
+      if (type) {
+        where.type = type;
+      }
+
+      if (jobId) {
+        where.jobId = jobId;
+      }
+
+      if (tokenAddress) {
+        where.tokenAddress = tokenAddress;
+      }
+
+      if (dateFrom || dateTo) {
+        where.createdAt = {};
+        if (dateFrom) {
+          where.createdAt.gte = new Date(dateFrom as string);
+        }
+        if (dateTo) {
+          where.createdAt.lte = new Date(dateTo as string);
+        }
+      }
+
+      if (minAmount || maxAmount) {
+        where.amount = {};
+        if (minAmount) {
+          where.amount.gte = Number(minAmount);
+        }
+        if (maxAmount) {
+          where.amount.lte = Number(maxAmount);
+        }
+      }
+
+      // Get transactions with enhanced data
+      const [transactions, total] = await Promise.all([
+        prisma.transaction.findMany({
+          where,
+          skip,
+          take: Number(limit),
+          orderBy: { createdAt: "desc" },
+          include: {
+            job: {
+              select: {
+                id: true,
+                title: true,
+                status: true,
+                clientId: true,
+                freelancerId: true,
+                client: {
+                  select: {
+                    id: true,
+                    username: true,
+                    avatarUrl: true,
+                  },
+                },
+                freelancer: {
+                  select: {
+                    id: true,
+                    username: true,
+                    avatarUrl: true,
+                  },
+                },
+              },
+            },
+            milestone: {
+              select: {
+                id: true,
+                title: true,
+                order: true,
+                status: true,
+              },
+            },
+            from: {
+              select: {
+                id: true,
+                username: true,
+                avatarUrl: true,
+              },
+            },
+            to: {
+              select: {
+                id: true,
+                username: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        }),
+        prisma.transaction.count({ where }),
+      ]);
+
+      // Enhance transactions with direction and role information
+      const enhancedTransactions = transactions.map((tx) => {
+        const isIncoming = tx.toAddress === user.walletAddress;
+        const isOutgoing = tx.fromAddress === user.walletAddress;
+
+        let userRole = "unknown";
+        if (tx.job.clientId === req.userId) {
+          userRole = "client";
+        } else if (tx.job.freelancerId === req.userId) {
+          userRole = "freelancer";
+        }
+
+        return {
+          ...tx,
+          direction: isIncoming ? "incoming" : "outgoing",
+          userRole,
+          counterparty: isIncoming ? tx.from : tx.to,
+          amountFormatted: {
+            value: tx.amount,
+            direction: isIncoming ? "+" : "-",
+            displayAmount: isIncoming ? `+${tx.amount}` : `-${tx.amount}`,
+          },
+        };
+      });
+
+      const response: any = {
+        transactions: enhancedTransactions,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages: Math.ceil(total / Number(limit)),
+        },
+      };
+
+      // Include analytics if requested
+      if (includeAnalytics) {
+        const analyticsWhere = { ...where };
+        delete analyticsWhere.OR; // Remove OR for analytics to get separate incoming/outgoing
+
+        const [
+          totalIncoming,
+          totalOutgoing,
+          transactionsByType,
+          transactionsByMonth,
+          uniqueCounterparties,
+        ] = await Promise.all([
+          // Total incoming
+          prisma.transaction.aggregate({
+            where: {
+              ...analyticsWhere,
+              toAddress: user.walletAddress,
+            },
+            _sum: { amount: true },
+            _count: true,
+          }),
+          // Total outgoing
+          prisma.transaction.aggregate({
+            where: {
+              ...analyticsWhere,
+              fromAddress: user.walletAddress,
+            },
+            _sum: { amount: true },
+            _count: true,
+          }),
+          // Transactions by type
+          prisma.transaction.groupBy({
+            by: ["type"],
+            where,
+            _sum: { amount: true },
+            _count: { type: true },
+          }),
+          // Transactions by month (last 12 months)
+          prisma.$queryRaw`
+            SELECT 
+              DATE_TRUNC('month', "createdAt") as month,
+              COUNT(*)::int as count,
+              SUM(amount)::float as total_amount,
+              SUM(CASE WHEN "toAddress" = ${user.walletAddress} THEN amount ELSE 0 END)::float as incoming_amount,
+              SUM(CASE WHEN "fromAddress" = ${user.walletAddress} THEN amount ELSE 0 END)::float as outgoing_amount
+            FROM "Transaction"
+            WHERE ("fromAddress" = ${user.walletAddress} OR "toAddress" = ${user.walletAddress})
+              AND "createdAt" >= NOW() - INTERVAL '12 months'
+            GROUP BY DATE_TRUNC('month', "createdAt")
+            ORDER BY month DESC
+          `,
+          // Unique counterparties
+          prisma.$queryRaw`
+            SELECT COUNT(DISTINCT 
+              CASE 
+                WHEN "fromAddress" = ${user.walletAddress} THEN "toAddress"
+                ELSE "fromAddress"
+              END
+            )::int as unique_counterparties
+            FROM "Transaction"
+            WHERE "fromAddress" = ${user.walletAddress} OR "toAddress" = ${user.walletAddress}
+          `,
+        ]);
+
+        response.analytics = {
+          summary: {
+            totalIncoming: totalIncoming._sum.amount || 0,
+            totalOutgoing: totalOutgoing._sum.amount || 0,
+            netBalance:
+              (totalIncoming._sum.amount || 0) -
+              (totalOutgoing._sum.amount || 0),
+            totalTransactions: totalIncoming._count + totalOutgoing._count,
+            incomingTransactions: totalIncoming._count,
+            outgoingTransactions: totalOutgoing._count,
+            uniqueCounterparties:
+              (uniqueCounterparties as any)[0]?.unique_counterparties || 0,
+          },
+          byType: transactionsByType.map((item) => ({
+            type: item.type,
+            count: item._count.type,
+            totalAmount: item._sum.amount || 0,
+          })),
+          byMonth: transactionsByMonth,
+        };
+      }
+
+      res.json(response);
+    } catch (error) {
+      console.error("Error fetching transaction history:", error);
+      res.status(500).json({ error: "Failed to fetch transaction history" });
+    }
+  },
+);
+
+/**
+ * GET /api/transactions/history/export
+ * Export transaction history as CSV for authenticated user
+ */
+router.get(
+  "/history/export",
+  authenticate,
+  validate({
+    query: z.object({
+      type: z
+        .enum(["DEPOSIT", "RELEASE", "REFUND", "DISPUTE_PAYOUT"])
+        .optional(),
+      direction: z.enum(["incoming", "outgoing", "all"]).default("all"),
+      dateFrom: z.string().optional(),
+      dateTo: z.string().optional(),
+      format: z.enum(["csv", "json"]).default("csv"),
+    }),
+  }),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.userId },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const {
+        type,
+        direction = "all",
+        dateFrom,
+        dateTo,
+        format = "csv",
+      } = req.query as any;
+
+      // Build filter
+      const where: any = {};
+
+      if (direction === "incoming") {
+        where.toAddress = user.walletAddress;
+      } else if (direction === "outgoing") {
+        where.fromAddress = user.walletAddress;
+      } else {
+        where.OR = [
+          { fromAddress: user.walletAddress },
+          { toAddress: user.walletAddress },
+        ];
+      }
+
+      if (type) {
+        where.type = type;
+      }
+
+      if (dateFrom || dateTo) {
+        where.createdAt = {};
+        if (dateFrom) {
+          where.createdAt.gte = new Date(dateFrom as string);
+        }
+        if (dateTo) {
+          where.createdAt.lte = new Date(dateTo as string);
+        }
+      }
+
+      // Get all transactions (no pagination for export)
+      const transactions = await prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        include: {
+          job: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+          milestone: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+        },
+      });
+
+      if (format === "json") {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="transactions-${Date.now()}.json"`,
+        );
+        return res.json(transactions);
+      }
+
+      // Generate CSV
+      const csvRows = [
+        [
+          "Date",
+          "Type",
+          "Direction",
+          "Amount",
+          "Token Address",
+          "From Address",
+          "To Address",
+          "Job Title",
+          "Milestone",
+          "Transaction Hash",
+        ].join(","),
+      ];
+
+      for (const tx of transactions) {
+        const isIncoming = tx.toAddress === user.walletAddress;
+        const row = [
+          tx.createdAt.toISOString(),
+          tx.type,
+          isIncoming ? "incoming" : "outgoing",
+          tx.amount,
+          tx.tokenAddress,
+          tx.fromAddress,
+          tx.toAddress,
+          `"${tx.job.title.replace(/"/g, '""')}"`,
+          tx.milestone ? `"${tx.milestone.title.replace(/"/g, '""')}"` : "",
+          tx.txHash,
+        ].join(",");
+        csvRows.push(row);
+      }
+
+      const csv = csvRows.join("\n");
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="transactions-${Date.now()}.csv"`,
+      );
+      res.send(csv);
+    } catch (error) {
+      console.error("Error exporting transaction history:", error);
+      res.status(500).json({ error: "Failed to export transaction history" });
+    }
+  },
+);
+
+/**
+ * GET /api/transactions/history/by-token
+ * Get transaction history grouped by token address
+ */
+router.get(
+  "/history/by-token",
+  authenticate,
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.userId },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Get transactions grouped by token
+      const transactionsByToken = await prisma.transaction.groupBy({
+        by: ["tokenAddress"],
+        where: {
+          OR: [
+            { fromAddress: user.walletAddress },
+            { toAddress: user.walletAddress },
+          ],
+        },
+        _sum: {
+          amount: true,
+        },
+        _count: {
+          tokenAddress: true,
+        },
+      });
+
+      // Get detailed breakdown for each token
+      const tokenDetails = await Promise.all(
+        transactionsByToken.map(async (tokenGroup) => {
+          const [incoming, outgoing] = await Promise.all([
+            prisma.transaction.aggregate({
+              where: {
+                tokenAddress: tokenGroup.tokenAddress,
+                toAddress: user.walletAddress,
+              },
+              _sum: { amount: true },
+              _count: true,
+            }),
+            prisma.transaction.aggregate({
+              where: {
+                tokenAddress: tokenGroup.tokenAddress,
+                fromAddress: user.walletAddress,
+              },
+              _sum: { amount: true },
+              _count: true,
+            }),
+          ]);
+
+          return {
+            tokenAddress: tokenGroup.tokenAddress,
+            totalTransactions: tokenGroup._count.tokenAddress,
+            totalVolume: tokenGroup._sum.amount || 0,
+            incoming: {
+              amount: incoming._sum.amount || 0,
+              count: incoming._count,
+            },
+            outgoing: {
+              amount: outgoing._sum.amount || 0,
+              count: outgoing._count,
+            },
+            netBalance:
+              (incoming._sum.amount || 0) - (outgoing._sum.amount || 0),
+          };
+        }),
+      );
+
+      res.json({
+        tokens: tokenDetails,
+        summary: {
+          uniqueTokens: transactionsByToken.length,
+          totalTransactions: tokenDetails.reduce(
+            (sum, t) => sum + t.totalTransactions,
+            0,
+          ),
+          totalVolume: tokenDetails.reduce((sum, t) => sum + t.totalVolume, 0),
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching transactions by token:", error);
+      res.status(500).json({ error: "Failed to fetch transactions by token" });
+    }
+  },
+);
+
+/**
+ * GET /api/transactions/history/counterparties
+ * Get list of unique counterparties (users transacted with)
+ */
+router.get(
+  "/history/counterparties",
+  authenticate,
+  validate({
+    query: z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      limit: z.coerce.number().int().min(1).max(100).default(20),
+    }),
+  }),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.userId },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const { page = 1, limit = 20 } = req.query as any;
+      const skip = (Number(page) - 1) * Number(limit);
+
+      // Get unique counterparties with transaction counts and volumes
+      const counterparties = await prisma.$queryRaw<
+        Array<{
+          wallet_address: string;
+          user_id: string;
+          username: string;
+          avatar_url: string | null;
+          transaction_count: number;
+          total_volume: number;
+          last_transaction: Date;
+        }>
+      >`
+        WITH counterparty_data AS (
+          SELECT 
+            CASE 
+              WHEN "fromAddress" = ${user.walletAddress} THEN "toAddress"
+              ELSE "fromAddress"
+            END as wallet_address,
+            COUNT(*)::int as transaction_count,
+            SUM(amount)::float as total_volume,
+            MAX("createdAt") as last_transaction
+          FROM "Transaction"
+          WHERE "fromAddress" = ${user.walletAddress} OR "toAddress" = ${user.walletAddress}
+          GROUP BY wallet_address
+        )
+        SELECT 
+          cd.wallet_address,
+          u.id as user_id,
+          u.username,
+          u."avatarUrl" as avatar_url,
+          cd.transaction_count,
+          cd.total_volume,
+          cd.last_transaction
+        FROM counterparty_data cd
+        LEFT JOIN "User" u ON u."walletAddress" = cd.wallet_address
+        ORDER BY cd.transaction_count DESC, cd.last_transaction DESC
+        LIMIT ${Number(limit)}
+        OFFSET ${skip}
+      `;
+
+      // Get total count
+      const totalCount = await prisma.$queryRaw<Array<{ count: number }>>`
+        SELECT COUNT(DISTINCT 
+          CASE 
+            WHEN "fromAddress" = ${user.walletAddress} THEN "toAddress"
+            ELSE "fromAddress"
+          END
+        )::int as count
+        FROM "Transaction"
+        WHERE "fromAddress" = ${user.walletAddress} OR "toAddress" = ${user.walletAddress}
+      `;
+
+      const total = totalCount[0]?.count || 0;
+
+      res.json({
+        counterparties,
+        pagination: {
+          page: Number(page),
+          limit: Number(limit),
+          total,
+          totalPages: Math.ceil(total / Number(limit)),
+        },
+      });
+    } catch (error) {
+      console.error("Error fetching counterparties:", error);
+      res.status(500).json({ error: "Failed to fetch counterparties" });
+    }
+  },
+);
+
 router.get(
   "/summary/stats",
   authenticate,

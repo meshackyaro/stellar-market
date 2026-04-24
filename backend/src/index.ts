@@ -4,7 +4,12 @@ import helmet from "helmet";
 import { createServer } from "http";
 import { config } from "./config";
 import routes from "./routes";
-import { globalRateLimiter, authRateLimiter, forgotPasswordRateLimiter, writeRateLimiter } from "./middleware/rate-limit";
+import {
+  globalRateLimiter,
+  authRateLimiter,
+  forgotPasswordRateLimiter,
+  writeRateLimiter,
+} from "./middleware/rate-limit";
 import { sanitizeInput } from "./middleware/sanitize";
 import { errorHandler } from "./middleware/error";
 import { initSocket } from "./socket";
@@ -29,14 +34,14 @@ const corsOptions: cors.CorsOptions = {
 };
 
 // Security middleware
-  // Swagger UI setup (disabled in production)
-  if (process.env.NODE_ENV !== "production") {
-    app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-    app.get("/api/openapi.json", (_req, res) => {
-      res.setHeader("Content-Type", "application/json");
-      res.send(swaggerSpec);
-    });
-  }
+// Swagger UI setup (disabled in production)
+if (process.env.NODE_ENV !== "production") {
+  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+  app.get("/api/openapi.json", (_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.send(swaggerSpec);
+  });
+}
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use(express.json());
@@ -73,6 +78,35 @@ app.use(errorHandler);
 httpServer.listen(config.port, () => {
   console.log(`StellarMarket API running on port ${config.port}`);
   startExpiryJob();
+});
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  console.log("SIGTERM received, shutting down gracefully...");
+
+  // Flush any pending notification batches
+  const { NotificationService } =
+    await import("./services/notification.service");
+  await NotificationService.flushAllBatches();
+
+  httpServer.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", async () => {
+  console.log("SIGINT received, shutting down gracefully...");
+
+  // Flush any pending notification batches
+  const { NotificationService } =
+    await import("./services/notification.service");
+  await NotificationService.flushAllBatches();
+
+  httpServer.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
 });
 
 export { app, httpServer };

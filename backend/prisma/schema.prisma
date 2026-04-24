@@ -147,6 +147,7 @@ model Job {
   flagReason    String?
   flaggedAt     DateTime?
   flaggedBy     String?
+  deletedAt     DateTime?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -160,6 +161,8 @@ model Job {
   attachments  Attachment[]
   dispute      Dispute?
   savedBy      SavedJob[]    @relation("SavedByFreelancers")
+
+  @@index([deletedAt])
 }
 
 model Milestone {
