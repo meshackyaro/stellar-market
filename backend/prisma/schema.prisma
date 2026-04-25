@@ -180,6 +180,7 @@ model Milestone {
 
   job          Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  attachments  Attachment[]
 }
 
 model Application {
@@ -254,24 +255,27 @@ model Transaction {
 }
 
 model Attachment {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   uploaderId   String
   jobId        String?
   disputeId    String?
+  milestoneId  String?
   filename     String
   originalName String
   mimeType     String
   size         Int
   url          String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
-  uploader User     @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
-  job      Job?     @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  dispute  Dispute? @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  uploader  User       @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  job       Job?       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  dispute   Dispute?   @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  milestone Milestone? @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
 
   @@index([uploaderId])
   @@index([jobId])
   @@index([disputeId])
+  @@index([milestoneId])
   @@index([createdAt])
 }
 
