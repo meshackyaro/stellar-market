@@ -67,7 +67,7 @@ export default function RootLayout({
             __html: `
               (function() {
                 try {
-                  var savedTheme = localStorage.getItem('theme');
+                  var savedTheme = localStorage.getItem('stellar-market-theme');
                   var supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
                   if (!savedTheme && supportDarkMode) savedTheme = 'dark';
                   if (!savedTheme) savedTheme = 'light';
