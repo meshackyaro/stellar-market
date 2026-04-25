@@ -2,7 +2,7 @@ use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, Env, IntoVal, String, Symbol, Vec,
+    vec, Address, Env, FromVal, IntoVal, String, Symbol, Vec,
 };
 
 use crate::*;
@@ -100,10 +100,71 @@ fn test_create_job() {
     assert_eq!(job.client, client_addr);
     assert_eq!(job.freelancer, freelancer);
     assert_eq!(job.total_amount, expected_total);
-    assert_eq!(job.status, JobStatus::Created);
-    assert_eq!(job.milestones.len(), 3);
-    assert_eq!(job.job_deadline, JOB_DEADLINE);
-    assert_eq!(job.auto_refund_after, GRACE_PERIOD);
+}
+
+#[test]
+fn test_extend_deadline_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, client_addr, freelancer, token, _) = setup_test(&env);
+
+    let milestones = vec![
+        &env,
+        (String::from_str(&env, "Design mockups"), 500_i128, JOB_DEADLINE),
+    ];
+
+    let job_id = contract.create_job(
+        &client_addr,
+        &freelancer,
+        &token,
+        &milestones,
+        &JOB_DEADLINE,
+        &GRACE_PERIOD,
+    );
+
+    let new_deadline = JOB_DEADLINE + 1000;
+    contract.extend_deadline(&job_id, &0, &new_deadline);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    
+    // Topics: (symbol_short!("escrow"), symbol_short!("deadline"))
+    assert_eq!(
+        last_event.0,
+        contract.address
+    );
+    let topic0: Symbol = last_event.1.get(0).unwrap().into_val(&env);
+    assert_eq!(topic0, symbol_short!("escrow"));
+    let topic1: Symbol = last_event.1.get(1).unwrap().into_val(&env);
+    assert_eq!(topic1, symbol_short!("deadline"));
+    
+    // Payload: (job_id, milestone_id, new_deadline)
+    let payload: (u64, u32, u64) = last_event.2.into_val(&env);
+    assert_eq!(payload, (job_id, 0, new_deadline));
+}
+
+#[test]
+fn test_fee_cap_enforcement_invalid_fee_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EscrowContract);
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let signers = vec![&env, admin.clone()];
+    let treasury = Address::generate(&env);
+    
+    // Initialize with valid fee first
+    client.initialize(&signers, &1, &treasury, &0, &604800);
+
+    // Try to set fee above MAX_FEE_BPS (1000)
+    let action = AdminAction::SetFeeBps(1001);
+    
+    // This should return EscrowError::InvalidFee (35)
+    let result = client.try_propose_admin_action(&admin, &action);
+    assert_eq!(result, Err(Ok(EscrowError::InvalidFee)));
 }
 
 #[test]

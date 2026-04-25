@@ -937,7 +937,7 @@ fn test_client_wins_freelancer_stake_slashed() {
     env.mock_all_auths();
 
     // 3 votes for client, 0 for freelancer → client wins → freelancer is loser
-    let (client, _, escrow_id, _user_client, _freelancer, dispute_id) =
+    let (client, _, _escrow_id, _user_client, _freelancer, dispute_id) =
         setup_dispute_with_votes(&env, 3, 0);
 
     let status = client.resolve_dispute(&dispute_id);
@@ -967,7 +967,7 @@ fn test_freelancer_wins_client_stake_slashed() {
     env.mock_all_auths();
 
     // 0 votes for client, 3 for freelancer → freelancer wins → client is loser
-    let (client, _, escrow_id, _user_client, _freelancer, dispute_id) =
+    let (client, _, _escrow_id, _user_client, _freelancer, dispute_id) =
         setup_dispute_with_votes(&env, 0, 3);
 
     let status = client.resolve_dispute(&dispute_id);
@@ -1197,7 +1197,7 @@ fn test_force_resolve_timeout_not_expired_fails() {
 
     // Try to force resolve before deadline (Deadline is 1000 + 604_800 = 605_800)
     env.ledger().with_mut(|l| l.timestamp = 600_000);
-    client.force_resolve_timeout(&dispute_id, &escrow_contract_id);
+    client.force_resolve_timeout(&dispute_id);
 }
 
 #[test]
@@ -1239,7 +1239,7 @@ fn test_force_resolve_timeout_expired_success() {
     // Advance past deadline (1000 + 604_800 = 605_800)
     env.ledger().with_mut(|l| l.timestamp = 605_801);
 
-    let status = client.force_resolve_timeout(&dispute_id, &escrow_contract_id);
+    let status = client.force_resolve_timeout(&dispute_id);
     assert_eq!(status, DisputeStatus::ResolvedForFreelancer);
 }
 
@@ -1273,6 +1273,6 @@ fn test_force_resolve_timeout_tie_break_success() {
     // Advance past deadline
     env.ledger().with_mut(|l| l.timestamp = 605_801);
 
-    let status = client.force_resolve_timeout(&dispute_id, &escrow_contract_id);
+    let status = client.force_resolve_timeout(&dispute_id);
     assert_eq!(status, DisputeStatus::ResolvedForClient);
 }

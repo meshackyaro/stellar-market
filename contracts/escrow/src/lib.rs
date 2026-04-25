@@ -62,6 +62,8 @@ pub enum EscrowError {
     EmptyMilestones = 33,
     /// The number of milestones exceeds the permitted limit.
     TooManyMilestones = 34,
+    /// The fee basis points exceed the maximum permitted limit.
+    InvalidFee = 35,
 }
 
 /// Privileged actions that can be proposed and approved through the multi-sig flow.
@@ -210,9 +212,7 @@ fn require_not_paused(env: &Env) -> Result<(), EscrowError> {
     Ok(())
 }
 
-/// Validates that every address in `callers` is a registered signer, calls
-
-
+/// Validates that every address in `callers` is a registered signer.
 fn is_signer(env: &Env, address: &Address) -> bool {
     if let Some(signers) = env.storage().instance().get::<_, Vec<Address>>(&DataKey::MultiSigSigners) {
         signers.iter().any(|s| s == *address)
@@ -256,7 +256,7 @@ impl EscrowContract {
             return Err(EscrowError::AlreadyInitialized);
         }
         if fee_bps > MAX_FEE_BPS {
-            return Err(EscrowError::InvalidStatus);
+            return Err(EscrowError::InvalidFee);
         }
         if threshold == 0 || threshold > signers.len() {
             return Err(EscrowError::InvalidThreshold);
@@ -437,7 +437,7 @@ impl EscrowContract {
             }
             AdminAction::SetFeeBps(fee) => {
                 if fee > MAX_FEE_BPS {
-                    return Err(EscrowError::InvalidStatus);
+                    return Err(EscrowError::InvalidFee);
                 }
                 env.storage().instance().set(&symbol_short!("FEE"), &fee);
             }
@@ -1719,6 +1719,12 @@ impl EscrowContract {
 
         job.milestones = milestones;
         env.storage().persistent().set(&get_job_key(job_id), &job);
+
+        // Emit deadline extension event
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("deadline")),
+            (job_id, milestone_id, new_deadline),
+        );
 
         Ok(())
     }
