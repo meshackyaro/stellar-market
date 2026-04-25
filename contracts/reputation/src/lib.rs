@@ -248,6 +248,8 @@ fn is_signer(env: &Env, address: &Address) -> bool {
 const MIN_REVIEW_STAKE_DEFAULT: i128 = 10_000_000; // 1.0 unit (7 decimals)
 const RATE_LIMIT_LEDGERS_DEFAULT: u32 = 120; // ~10 minutes
 const DEFAULT_REFERRAL_BONUS: u64 = 5; // Equivalates to a 5-star review bonus
+/// Weight used when crediting referral bonus to reputation (not min review stake).
+const REFERRAL_BONUS_REPUTATION_WEIGHT: u64 = 1;
 const ONE_YEAR_IN_SECONDS: u64 = 31_536_000;
 
 const MIN_TTL_THRESHOLD: u32 = 1_000;
@@ -646,20 +648,16 @@ impl ReputationContract {
                 MIN_TTL_EXTEND_TO,
             );
 
-            // Credit the reputation score equivalent to the bonus rating
-            // Effectively a high-weight default review.
-            // We now store this as a record for decay calculation.
+            // Credit reputation as one virtual review at REFERRAL_BONUS_REPUTATION_WEIGHT
+            // with rating `bonus_rating` (avoids min_stake scaling, which inflated totals).
+            // Stored as a record for decay calculation.
             let bonus_rating = env
                 .storage()
                 .instance()
                 .get::<DataKey, u64>(&DataKey::ReferralBonus)
                 .unwrap_or(DEFAULT_REFERRAL_BONUS);
-            let min_stake = env
-                .storage()
-                .instance()
-                .get::<DataKey, i128>(&DataKey::MinStake)
-                .unwrap_or(MIN_REVIEW_STAKE_DEFAULT) as u64;
-            let earned_score = bonus_rating * min_stake;
+            let weight = REFERRAL_BONUS_REPUTATION_WEIGHT;
+            let earned_score = bonus_rating * weight;
 
             let bonuses_key = DataKey::ReferralBonusList(referrer.clone());
             let mut bonuses: Vec<ReferralBonusRecord> = env
@@ -670,7 +668,7 @@ impl ReputationContract {
 
             bonuses.push_back(ReferralBonusRecord {
                 amount: earned_score,
-                weight: min_stake,
+                weight,
                 timestamp: env.ledger().timestamp(),
             });
 
@@ -695,7 +693,7 @@ impl ReputationContract {
                 });
 
             reputation.total_score += earned_score;
-            reputation.total_weight += min_stake;
+            reputation.total_weight += weight;
 
             env.storage().persistent().set(&rep_key, &reputation);
             bump_reputation_ttl(env, &referrer);
@@ -1130,10 +1128,7 @@ impl ReputationContract {
             };
 
             if weight > 0 && bonus.weight > 0 {
-                // amount is already rating * weight in process_referral_bonus
-                // but wait, earned_score = bonus_rating * min_stake;
-                // so if we decay the weight, we should decay the score too.
-                // Score = bonus_rating * decayed_weight
+                // amount = bonus_rating * bonus.weight at grant time; decay weight in sync.
                 let bonus_rating = bonus.amount / bonus.weight;
                 total_score += bonus_rating * weight;
                 total_weight += weight;

@@ -1310,13 +1310,13 @@ fn test_referral_bonus_granted_on_first_job() {
     let stats = reputation_client.get_referral_stats(&referrer);
     assert_eq!(stats.total_referrals, 1);
 
-    // Earned bonus = DEFAULT_REFERRAL_BONUS (5) * MIN_STAKE (10_000_000)
-    assert_eq!(stats.earned_bonus, 5 * MIN_STAKE as u64);
+    // Earned bonus uses fixed reputation weight (1), not min review stake.
+    assert_eq!(stats.earned_bonus, 5u64);
 
     // Check Referrer's Reputation (they should have received the bonus reputation payload natively)
     let rep = reputation_client.get_reputation(&referrer);
-    assert_eq!(rep.total_score, 5 * MIN_STAKE as u64);
-    assert_eq!(rep.total_weight, MIN_STAKE as u64);
+    assert_eq!(rep.total_score, 5u64);
+    assert_eq!(rep.total_weight, 1u64);
 }
 
 #[test]
