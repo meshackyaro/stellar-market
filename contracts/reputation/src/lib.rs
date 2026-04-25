@@ -1479,7 +1479,7 @@ impl ReputationContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, vec, Env};
+    use soroban_sdk::{testutils::Address as _, testutils::Ledger, vec, Env};
 
     fn seed_review_state(
         env: &Env,
