@@ -700,7 +700,6 @@ impl DisputeContract {
     pub fn resolve_dispute(
         env: Env,
         dispute_id: u64,
-        escrow: Address,
     ) -> Result<DisputeStatus, DisputeError> {
         require_not_paused(&env)?;
 
@@ -710,6 +709,13 @@ impl DisputeContract {
             .get(&DataKey::Dispute(dispute_id))
             .ok_or(DisputeError::DisputeNotFound)?;
         bump_dispute_ttl(&env, dispute_id);
+
+        // Retrieve the trusted escrow contract address from storage
+        let escrow: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowContract)
+            .ok_or(DisputeError::NotInitialized)?;
 
         if dispute.status == DisputeStatus::ResolvedForClient
             || dispute.status == DisputeStatus::ResolvedForFreelancer

@@ -300,7 +300,7 @@ fn test_dispute_resolved_for_freelancer() {
     assert_eq!(dispute.votes_for_client, 1);
 
     // Resolution is final in reputation-based voting (no appeals)
-    let result = dispute_client.resolve_dispute(&dispute_id_val, &escrow_id);
+    let result = dispute_client.resolve_dispute(&dispute_id_val);
     assert_eq!(result, DisputeStatus::ResolvedForFreelancer);
 
     // Funds are transferred immediately to freelancer
@@ -402,7 +402,7 @@ fn test_dispute_resolved_for_client() {
 
     // First resolution — not final yet (max_appeals=2, appeal_count=0).
     // Resolution is final in reputation-based voting (no appeals)
-    let result = dispute_client.resolve_dispute(&dispute_id_val, &escrow_id);
+    let result = dispute_client.resolve_dispute(&dispute_id_val);
     assert_eq!(result, DisputeStatus::ResolvedForClient);
 
     // Funds are refunded to client immediately
@@ -638,7 +638,7 @@ fn test_dispute_with_all_milestones_approved() {
     );
 
     // Resolution is final in reputation-based voting (no appeals)
-    let result = dispute_client.resolve_dispute(&dispute_id_val, &escrow_id);
+    let result = dispute_client.resolve_dispute(&dispute_id_val);
     assert_eq!(result, DisputeStatus::ResolvedForFreelancer);
 
     // Funds are transferred immediately to freelancer
