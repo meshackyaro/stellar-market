@@ -1,54 +1,63 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient, JobStatus, UserRole } from "@prisma/client";
-import { cache } from "../lib/cache";
+import { PrismaClient } from "@prisma/client";
 import { asyncHandler } from "../middleware/error";
+import { cache } from "../lib/cache";
 
 const router = Router();
 const prisma = new PrismaClient();
 
-const STATS_CACHE_KEY = "platform:stats";
-const STATS_TTL_S = 60;
-
 /**
  * GET /api/platform/stats
- * Public endpoint — no authentication required.
- * Returns aggregate platform metrics, cached in Redis for 60 s.
+ *
+ * Publicly accessible aggregate statistics for the landing page (issue #283).
+ * Returns only anonymised aggregate counts — no PII, no individual records.
+ * Cached for 60 seconds to avoid hammering the DB on every page load.
  */
 router.get(
   "/stats",
   asyncHandler(async (_req: Request, res: Response) => {
-    const { data, hit } = await cache(STATS_CACHE_KEY, STATS_TTL_S, async () => {
+    const cacheKey = "platform:stats";
+
+    const { data } = await cache(cacheKey, 60, async () => {
       const [
         totalJobs,
         openJobs,
         completedJobs,
         totalFreelancers,
-        totalClients,
-        volumeAgg,
+        totalDisputes,
+        resolvedDisputes,
+        escrowAggregate,
       ] = await Promise.all([
         prisma.job.count(),
-        prisma.job.count({ where: { status: JobStatus.OPEN } }),
-        prisma.job.count({ where: { status: JobStatus.COMPLETED } }),
-        prisma.user.count({ where: { role: UserRole.FREELANCER } }),
-        prisma.user.count({ where: { role: UserRole.CLIENT } }),
-        (prisma as any).transaction.aggregate({ _sum: { amount: true } }),
+        prisma.job.count({ where: { status: "OPEN" } }),
+        prisma.job.count({ where: { status: "COMPLETED" } }),
+        prisma.user.count({ where: { role: "FREELANCER" } }),
+        prisma.dispute.count(),
+        prisma.dispute.count({
+          where: { status: "RESOLVED" },
+        }),
+        prisma.job.aggregate({
+          _sum: { budget: true },
+          where: { status: { in: ["IN_PROGRESS", "COMPLETED"] } },
+        }),
       ]);
 
-      const totalVolumeXLM = volumeAgg._sum.amount ?? 0;
-      const avgJobValueXLM = totalJobs > 0 ? totalVolumeXLM / totalJobs : 0;
+      const totalEscrowXlm = escrowAggregate._sum.budget ?? 0;
+      const resolvedDisputesPct =
+        totalDisputes > 0
+          ? Math.round((resolvedDisputes / totalDisputes) * 100)
+          : 100;
 
       return {
         totalJobs,
         openJobs,
         completedJobs,
         totalFreelancers,
-        totalClients,
-        totalVolumeXLM,
-        avgJobValueXLM: parseFloat(avgJobValueXLM.toFixed(7)),
+        totalEscrowXlm,
+        resolvedDisputesPct,
       };
     });
 
-    res.set("X-Cache-Hit", hit.toString());
     res.json(data);
   }),
 );

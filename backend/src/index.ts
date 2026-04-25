@@ -14,6 +14,7 @@ import { sanitizeInput } from "./middleware/sanitize";
 import { errorHandler } from "./middleware/error";
 import { initSocket } from "./socket";
 import { startExpiryJob } from "./jobs/expiry.job";
+import { startHorizonListener, stopHorizonListener } from "./services/horizon-listener.service";
 
 const app = express();
 import { swaggerUi, swaggerSpec } from "./config/swagger";
@@ -34,6 +35,8 @@ const corsOptions: cors.CorsOptions = {
 };
 
 // Security middleware
+app.use(helmet());
+
 // Swagger UI setup (disabled in production)
 if (process.env.NODE_ENV !== "production") {
   app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
@@ -42,7 +45,6 @@ if (process.env.NODE_ENV !== "production") {
     res.send(swaggerSpec);
   });
 }
-app.use(helmet());
 app.use(cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
@@ -79,13 +81,14 @@ app.use(errorHandler);
 httpServer.listen(config.port, () => {
   console.log(`StellarMarket API running on port ${config.port}`);
   startExpiryJob();
+  startHorizonListener();
 });
 
-// Graceful shutdown
-process.on("SIGTERM", async () => {
-  console.log("SIGTERM received, shutting down gracefully...");
+async function gracefulShutdown(signal: string): Promise<void> {
+  console.log(`${signal} received, shutting down gracefully...`);
 
-  // Flush any pending notification batches
+  stopHorizonListener();
+
   const { NotificationService } =
     await import("./services/notification.service");
   await NotificationService.flushAllBatches();
@@ -94,20 +97,9 @@ process.on("SIGTERM", async () => {
     console.log("Server closed");
     process.exit(0);
   });
-});
+}
 
-process.on("SIGINT", async () => {
-  console.log("SIGINT received, shutting down gracefully...");
-
-  // Flush any pending notification batches
-  const { NotificationService } =
-    await import("./services/notification.service");
-  await NotificationService.flushAllBatches();
-
-  httpServer.close(() => {
-    console.log("Server closed");
-    process.exit(0);
-  });
-});
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 export { app, httpServer };

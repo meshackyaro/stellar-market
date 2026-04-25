@@ -88,7 +88,7 @@ afterEach(() => jest.clearAllMocks());
 
 // ─── POST /api/auth/2fa/setup ────────────────────────────────────────────────
 describe("POST /api/auth/2fa/setup", () => {
-  it("returns QR code, secret, and backup codes", async () => {
+  it("returns QR code and secret (recovery codes are issued only after TOTP verify)", async () => {
     userMock.findUnique.mockResolvedValue({ ...baseUser });
     userMock.update.mockResolvedValueOnce({ ...baseUser });
 
@@ -99,7 +99,13 @@ describe("POST /api/auth/2fa/setup", () => {
     expect(res.status).toBe(200);
     expect(res.body.qrCode).toContain("data:image/png");
     expect(res.body.secret).toBeDefined();
-    expect(res.body.backupCodes).toHaveLength(8);
+    expect(res.body.backupCodes).toBeUndefined();
+    expect(res.body.recoveryCodes).toBeUndefined();
+    expect(userMock.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ backupCodes: [] }),
+      }),
+    );
   });
 
   it("returns 400 if 2FA is already enabled", async () => {
@@ -138,9 +144,11 @@ describe("POST /api/auth/2fa/verify", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.message).toBe("2FA has been enabled successfully.");
-    expect(userMock.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { twoFactorEnabled: true } }),
-    );
+    expect(res.body.recoveryCodes).toHaveLength(10);
+    expect(res.body.recoveryCodes.every((c: string) => /^[a-f0-9]{8}$/.test(c))).toBe(true);
+    const updateArg = userMock.update.mock.calls[0][0];
+    expect(updateArg.data.twoFactorEnabled).toBe(true);
+    expect(updateArg.data.backupCodes).toHaveLength(10);
   });
 
   it("returns 400 with invalid code", async () => {
@@ -167,6 +175,78 @@ describe("POST /api/auth/2fa/verify", () => {
       .send({ code: mockTotpCode });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// ─── POST /api/auth/2fa/enable (alias of verify) ─────────────────────────────
+describe("POST /api/auth/2fa/enable", () => {
+  it("enables 2FA and returns recovery codes like verify", async () => {
+    userMock.findUnique.mockResolvedValue({
+      ...baseUser,
+      twoFactorSecret: `encrypted:${MOCK_SECRET}`,
+    });
+    userMock.update.mockResolvedValueOnce({ ...baseUser, twoFactorEnabled: true });
+
+    const res = await request(app)
+      .post("/api/auth/2fa/enable")
+      .set(authHeader())
+      .send({ code: mockTotpCode });
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe("2FA has been enabled successfully.");
+    expect(res.body.recoveryCodes).toHaveLength(10);
+  });
+});
+
+// ─── POST /api/auth/2fa/regenerate ───────────────────────────────────────────
+describe("POST /api/auth/2fa/regenerate", () => {
+  it("returns new recovery codes when TOTP is valid", async () => {
+    userMock.findUnique.mockResolvedValue({
+      ...baseUser,
+      twoFactorEnabled: true,
+      twoFactorSecret: `encrypted:${MOCK_SECRET}`,
+      backupCodes: ["oldhash"],
+    });
+    userMock.update.mockResolvedValueOnce({ ...baseUser, twoFactorEnabled: true });
+
+    const res = await request(app)
+      .post("/api/auth/2fa/regenerate")
+      .set(authHeader())
+      .send({ code: mockTotpCode });
+
+    expect(res.status).toBe(200);
+    expect(res.body.recoveryCodes).toHaveLength(10);
+    expect(res.body.message).toContain("regenerated");
+    const updateArg = userMock.update.mock.calls[0][0];
+    expect(updateArg.data.backupCodes).toHaveLength(10);
+  });
+
+  it("returns 400 with invalid TOTP", async () => {
+    userMock.findUnique.mockResolvedValue({
+      ...baseUser,
+      twoFactorEnabled: true,
+      twoFactorSecret: `encrypted:${MOCK_SECRET}`,
+    });
+
+    const res = await request(app)
+      .post("/api/auth/2fa/regenerate")
+      .set(authHeader())
+      .send({ code: "000000" });
+
+    expect(res.status).toBe(400);
+    expect(userMock.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 if 2FA is not enabled", async () => {
+    userMock.findUnique.mockResolvedValue({ ...baseUser });
+
+    const res = await request(app)
+      .post("/api/auth/2fa/regenerate")
+      .set(authHeader())
+      .send({ code: mockTotpCode });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("2FA is not enabled.");
   });
 });
 

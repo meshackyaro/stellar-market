@@ -704,7 +704,6 @@ impl DisputeContract {
     pub fn resolve_dispute(
         env: Env,
         dispute_id: u64,
-        escrow: Address,
     ) -> Result<DisputeStatus, DisputeError> {
         require_not_paused(&env)?;
 
@@ -734,20 +733,13 @@ impl DisputeContract {
             .ok_or(DisputeError::DisputeNotFound)?;
         bump_dispute_ttl(&env, dispute_id);
 
-        if env.ledger().timestamp() < dispute.voting_deadline {
-            return Err(DisputeError::VotingPeriodNotExpired);
-        }
+        // Retrieve the trusted escrow contract address from storage
+        let escrow: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowContract)
+            .ok_or(DisputeError::NotInitialized)?;
 
-        Self::internal_resolve(&env, dispute_id, dispute, escrow, true)
-    }
-
-    fn internal_resolve(
-        env: &Env,
-        dispute_id: u64,
-        mut dispute: Dispute,
-        escrow: Address,
-        force: bool,
-    ) -> Result<DisputeStatus, DisputeError> {
         if dispute.status == DisputeStatus::ResolvedForClient
             || dispute.status == DisputeStatus::ResolvedForFreelancer
             || dispute.status == DisputeStatus::RefundedBoth

@@ -58,6 +58,10 @@ pub enum EscrowError {
     MultiSigProposalNotFound = 31,
     /// Partial payment amount is invalid (must be > 0 and <= milestone remaining balance).
     InvalidPartialAmount = 32,
+    /// The milestone list is empty.
+    EmptyMilestones = 33,
+    /// The number of milestones exceeds the permitted limit.
+    TooManyMilestones = 34,
 }
 
 /// Privileged actions that can be proposed and approved through the multi-sig flow.
@@ -158,6 +162,7 @@ pub struct Job {
 }
 
 const MAX_FEE_BPS: u32 = 1000; // 10%
+const MAX_MILESTONES: u32 = 50;
 
 /// A formal proposal to revise the milestones and total budget of an active job.
 #[contracttype]
@@ -511,6 +516,13 @@ impl EscrowContract {
 
         if job_deadline <= env.ledger().timestamp() {
             return Err(EscrowError::InvalidDeadline);
+        }
+
+        if milestones.is_empty() {
+            return Err(EscrowError::EmptyMilestones);
+        }
+        if milestones.len() > MAX_MILESTONES {
+            return Err(EscrowError::TooManyMilestones);
         }
 
         let mut job_count: u64 = env
@@ -1350,9 +1362,12 @@ impl EscrowContract {
             }
         }
 
-        // 4. Validate non-empty milestones
+        // 4. Validate milestones
         if new_milestones.is_empty() {
             return Err(EscrowError::EmptyMilestonesProposed);
+        }
+        if new_milestones.len() > MAX_MILESTONES {
+            return Err(EscrowError::TooManyMilestones);
         }
 
         // 5. Compute new_total as the sum of all milestone amounts

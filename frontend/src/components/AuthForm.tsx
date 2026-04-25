@@ -115,7 +115,7 @@ export default function AuthForm({ type }: AuthFormProps) {
           <ShieldCheck size={48} className="mx-auto mb-4 text-stellar-blue" />
           <h1 className="text-3xl font-bold text-dark-heading mb-2">Two-Factor Authentication</h1>
           <p className="text-dark-muted">
-            Enter the 6-digit code from your authenticator app, or use a backup code.
+            Enter the 6-digit code from your authenticator app, or an 8-character recovery code.
           </p>
         </div>
 
@@ -135,9 +135,10 @@ export default function AuthForm({ type }: AuthFormProps) {
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 bg-dark-bg border border-dark-border rounded-lg focus:ring-2 focus:ring-stellar-blue outline-none transition-all text-dark-text text-center tracking-widest"
-                placeholder="000000"
+                placeholder="000000 or recovery"
                 autoFocus
                 autoComplete="one-time-code"
+                maxLength={32}
               />
             </div>
           </div>

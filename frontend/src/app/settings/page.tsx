@@ -46,13 +46,16 @@ export default function SettingsPage() {
   const [twoFASetupData, setTwoFASetupData] = useState<{
     qrCode: string;
     secret: string;
-    backupCodes: string[];
   } | null>(null);
+  /** Shown once after enable or regenerate; plain codes only exist in memory until dismissed. */
+  const [recoveryCodesPending, setRecoveryCodesPending] = useState<string[] | null>(null);
   const [verifyCode, setVerifyCode] = useState("");
   const [disablePassword, setDisablePassword] = useState("");
   const [showDisableModal, setShowDisableModal] = useState(false);
+  const [showRegenerateModal, setShowRegenerateModal] = useState(false);
+  const [regenerateTotp, setRegenerateTotp] = useState("");
   const [twoFALoading, setTwoFALoading] = useState(false);
-  const [copiedBackup, setCopiedBackup] = useState(false);
+  const [copiedRecovery, setCopiedRecovery] = useState(false);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -288,11 +291,11 @@ export default function SettingsPage() {
     }
   }
 
-  function copyBackupCodes() {
-    if (twoFASetupData) {
-      navigator.clipboard.writeText(twoFASetupData.backupCodes.join("\n"));
-      setCopiedBackup(true);
-      setTimeout(() => setCopiedBackup(false), 2000);
+  function copyRecoveryCodes() {
+    if (recoveryCodesPending?.length) {
+      navigator.clipboard.writeText(recoveryCodesPending.join("\n"));
+      setCopiedRecovery(true);
+      setTimeout(() => setCopiedRecovery(false), 2000);
     }
   }
 
@@ -609,7 +612,41 @@ export default function SettingsPage() {
             Security
           </h2>
 
-          {twoFAEnabled && !twoFASetupData ? (
+          {recoveryCodesPending && recoveryCodesPending.length > 0 ? (
+            <div className="space-y-4 rounded-lg border border-amber-600/40 bg-amber-950/30 p-4">
+              <p className="text-amber-200 text-sm font-medium">
+                Save these recovery codes now. Each code works once instead of your authenticator at login. They will not be shown again.
+              </p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-dark-muted text-xs">Recovery codes</p>
+                <button
+                  type="button"
+                  onClick={copyRecoveryCodes}
+                  className="flex items-center gap-1 text-xs text-stellar-blue hover:underline shrink-0"
+                >
+                  {copiedRecovery ? <Check size={12} /> : <Copy size={12} />}
+                  {copiedRecovery ? "Copied!" : "Copy all"}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {recoveryCodesPending.map((code, i) => (
+                  <code
+                    key={i}
+                    className="block p-2 bg-dark-bg border border-dark-border rounded text-center text-sm text-dark-text font-mono"
+                  >
+                    {code}
+                  </code>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setRecoveryCodesPending(null)}
+                className="btn-primary text-sm"
+              >
+                I have stored my recovery codes safely
+              </button>
+            </div>
+          ) : twoFAEnabled && !twoFASetupData ? (
             /* 2FA is ON */
             <div className="space-y-4">
               <div className="flex items-center gap-3 p-4 bg-green-900/20 border border-green-700/30 rounded-lg">
@@ -617,7 +654,40 @@ export default function SettingsPage() {
                 <p className="text-green-300 text-sm">Two-factor authentication is enabled.</p>
               </div>
 
-              {showDisableModal ? (
+              {showRegenerateModal ? (
+                <form onSubmit={handleRegenerateRecovery} className="space-y-3 rounded-lg border border-dark-border p-4">
+                  <p className="text-dark-muted text-sm">
+                    Enter a 6-digit code from your authenticator. This replaces all existing recovery codes.
+                  </p>
+                  <input
+                    type="text"
+                    value={regenerateTotp}
+                    onChange={(e) => setRegenerateTotp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    className="input-field text-center tracking-widest"
+                    placeholder="000000"
+                    maxLength={6}
+                    required
+                    autoComplete="one-time-code"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      disabled={twoFALoading || regenerateTotp.length !== 6}
+                      className="flex items-center gap-2 px-4 py-2 bg-stellar-blue hover:bg-stellar-blue/90 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+                    >
+                      {twoFALoading ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+                      Generate new codes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowRegenerateModal(false); setRegenerateTotp(""); }}
+                      className="px-4 py-2 border border-dark-border text-dark-text rounded-lg text-sm hover:bg-dark-bg transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : showDisableModal ? (
                 <form onSubmit={handleDisable2FA} className="space-y-3">
                   <p className="text-dark-muted text-sm">Enter your password to disable 2FA:</p>
                   <input
@@ -647,13 +717,24 @@ export default function SettingsPage() {
                   </div>
                 </form>
               ) : (
-                <button
-                  onClick={() => setShowDisableModal(true)}
-                  className="flex items-center gap-2 px-4 py-2 border border-red-600/50 text-red-400 rounded-lg text-sm hover:bg-red-900/20 transition-colors"
-                >
-                  <ShieldOff size={14} />
-                  Disable 2FA
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRegenerateModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 border border-stellar-blue/50 text-stellar-blue rounded-lg text-sm hover:bg-stellar-blue/10 transition-colors"
+                  >
+                    <ShieldCheck size={14} />
+                    Regenerate recovery codes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDisableModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 border border-red-600/50 text-red-400 rounded-lg text-sm hover:bg-red-900/20 transition-colors"
+                  >
+                    <ShieldOff size={14} />
+                    Disable 2FA
+                  </button>
+                </div>
               )}
             </div>
           ) : twoFASetupData ? (
@@ -677,29 +758,9 @@ export default function SettingsPage() {
                 </code>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-dark-muted text-xs">Backup codes (save these securely):</p>
-                  <button
-                    type="button"
-                    onClick={copyBackupCodes}
-                    className="flex items-center gap-1 text-xs text-stellar-blue hover:underline"
-                  >
-                    {copiedBackup ? <Check size={12} /> : <Copy size={12} />}
-                    {copiedBackup ? "Copied!" : "Copy all"}
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {twoFASetupData.backupCodes.map((code, i) => (
-                    <code
-                      key={i}
-                      className="block p-2 bg-dark-bg border border-dark-border rounded text-center text-sm text-dark-text font-mono"
-                    >
-                      {code}
-                    </code>
-                  ))}
-                </div>
-              </div>
+              <p className="text-dark-muted text-xs">
+                After you verify with a 6-digit app code, you will receive one-time recovery codes to download or copy. Store them offline.
+              </p>
 
               <form onSubmit={handleVerify2FA} className="space-y-3">
                 <label className="block text-sm font-medium text-dark-heading">

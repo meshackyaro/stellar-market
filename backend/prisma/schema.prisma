@@ -72,6 +72,14 @@ enum NotificationType {
   DISPUTE_RAISED
   DISPUTE_RESOLVED
   NEW_MESSAGE
+  BADGE_AWARDED
+}
+
+enum BadgeTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
 }
 
 enum DisputeStatus {
@@ -128,6 +136,7 @@ model User {
   votesCast          DisputeVote[]  @relation("VotesCast")
   savedJobs          SavedJob[]     @relation("SavedJobs")
   reportsGiven       Report[]       @relation("ReportsGiven")
+  badges             Badge[]
 }
 
 model Job {
@@ -398,4 +407,23 @@ model Report {
   @@index([targetType])
   @@index([status])
   @@index([createdAt])
+}
+
+model SyncState {
+  id                String   @id @default("default")
+  lastIndexedLedger Int      @default(0)
+  updatedAt         DateTime @updatedAt
+}
+
+model Badge {
+  id            String    @id @default(cuid())
+  userId        String
+  tier          BadgeTier
+  awardedLedger Int
+  createdAt     DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tier])
+  @@index([userId])
 }

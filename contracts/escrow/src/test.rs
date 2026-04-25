@@ -163,6 +163,51 @@ fn test_create_job_invalid_deadline() {
 }
 
 #[test]
+#[should_panic(expected = "HostError: Error(Contract, #33)")] // EmptyMilestones
+fn test_create_job_empty_milestones() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, user, freelancer, token, admin) = setup_test(&env);
+
+    let milestones = vec![&env];
+
+    contract.create_job(
+        &user,
+        &freelancer,
+        &token,
+        &milestones,
+        &2000_u64,
+        &GRACE_PERIOD,
+    );
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #34)")] // TooManyMilestones
+fn test_create_job_too_many_milestones() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, user, freelancer, token, admin) = setup_test(&env);
+
+    let mut milestones = vec![&env];
+    for _ in 0..51 {
+        milestones.push_back((String::from_str(&env, "Task"), 100_i128, 2000_u64));
+    }
+
+    contract.create_job(
+        &user,
+        &freelancer,
+        &token,
+        &milestones,
+        &3000_u64,
+        &GRACE_PERIOD,
+    );
+}
+
+#[test]
 #[should_panic(expected = "HostError: Error(Contract, #8)")] // MilestoneDeadlineExceeded
 fn test_submit_milestone_past_deadline() {
     let env = Env::default();
@@ -796,6 +841,29 @@ fn test_propose_revision_fails_when_pending_proposal_exists() {
     ];
     contract.propose_revision(&client, &job_id, &new_milestones);
     contract.propose_revision(&freelancer, &job_id, &new_milestones);
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Contract, #34)")] // TooManyMilestones
+fn test_propose_revision_too_many_milestones() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract, client, freelancer, token, admin) = setup_test(&env);
+
+    let milestones = vec![&env, (String::from_str(&env, "Initial"), 1000_i128, JOB_DEADLINE)];
+    let job_id = contract.create_job(&client, &freelancer, &token, &milestones, &JOB_DEADLINE, &GRACE_PERIOD);
+
+    let mut new_milestones = vec![&env];
+    for i in 0..51 {
+        new_milestones.push_back(Milestone {
+            id: i,
+            description: String::from_str(&env, "New"),
+            amount: 10,
+            status: MilestoneStatus::Pending,
+            deadline: JOB_DEADLINE,
+        });
+    }
+    contract.propose_revision(&client, &job_id, &new_milestones);
 }
 
 #[test]

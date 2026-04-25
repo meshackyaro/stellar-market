@@ -49,9 +49,12 @@ export const getJobsQuerySchema = paginationSchema.extend({
   minBudget: z.coerce.number().positive().optional(),
   maxBudget: z.coerce.number().positive().optional(),
   clientId: z.string().min(1).optional(),
-  sort: z.enum(["newest", "oldest", "budget_high", "budget_low"]).optional(),
-  postedAfter: z.string().optional(),
-  cursor: z.string().optional(),
+  token: z.string().optional(),
+  sort: z
+    .enum(["newest", "oldest", "budget_high", "budget_low", "budget_desc", "budget_asc"])
+    .optional(),
+     postedAfter: z.string().optional(),
+     cursor: z.string().optional(),
 });
 
 export const getJobByIdParamSchema = z.object({
