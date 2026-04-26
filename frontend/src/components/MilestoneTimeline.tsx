@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle, Loader2, PencilLine, ShieldCheck } from "lucide-react";
+import { CheckCircle, Loader2, PencilLine, ShieldCheck, DollarSign } from "lucide-react";
 
 import StatusBadge from "@/components/StatusBadge";
 import type { Milestone } from "@/types";
@@ -22,6 +22,9 @@ function getIndicatorClasses(status: Milestone["status"], approvedPulse: boolean
     return approvedPulse
       ? "bg-theme-success border-theme-success shadow-[0_0_0_4px_rgba(34,197,94,0.18)]"
       : "bg-theme-success border-theme-success";
+  }
+  if (status === "PARTIALLY_PAID") {
+    return "bg-amber-500 border-amber-500";
   }
   if (status === "SUBMITTED") {
     return "bg-theme-warning border-theme-warning";
@@ -84,6 +87,8 @@ export default function MilestoneTimeline({
                   >
                     {milestone.status === "APPROVED" ? (
                       <CheckCircle className="text-white" size={18} />
+                    ) : milestone.status === "PARTIALLY_PAID" ? (
+                      <DollarSign className="text-white" size={18} />
                     ) : (
                       index + 1
                     )}

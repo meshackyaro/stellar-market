@@ -21,7 +21,7 @@ export interface Milestone {
   title: string;
   description: string;
   amount: number;
-  status: "PENDING" | "IN_PROGRESS" | "SUBMITTED" | "APPROVED" | "REJECTED";
+  status: "PENDING" | "IN_PROGRESS" | "SUBMITTED" | "APPROVED" | "REJECTED" | "PARTIALLY_PAID";
   order: number;
   onChainIndex?: number;
   contractDeadline?: string;
