@@ -2,7 +2,7 @@ use soroban_sdk::{
     contract, contractimpl,
     testutils::{Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
-    vec, Address, Env, FromVal, IntoVal, String, Symbol, Vec,
+    vec, Address, Env, IntoVal, String, Symbol, Vec,
 };
 
 use crate::*;
