@@ -111,6 +111,16 @@ pub struct UserReputation {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserReputationWithReferrer {
+    pub user: Address,
+    pub referrer: Option<Address>,
+    pub total_score: u64,
+    pub total_weight: u64,
+    pub review_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReferralBonusRecord {
     pub amount: u64,
     pub weight: u64,
@@ -612,6 +622,15 @@ impl ReputationContract {
         Ok(())
     }
 
+    /// Alias for `register_referral` using the naming from the public API proposal.
+    pub fn register_with_referrer(
+        env: Env,
+        user: Address,
+        referrer: Address,
+    ) -> Result<(), ReputationError> {
+        Self::register_referral(env, user, referrer)
+    }
+
     /// Retrieve the stats for a referrer
     pub fn get_referral_stats(env: Env, referrer: Address) -> ReferralStats {
         let stats_key = DataKey::ReferralStats(referrer.clone());
@@ -720,6 +739,11 @@ impl ReputationContract {
                 (symbol_short!("reput"), symbol_short!("ref_rwrd")),
                 (referrer.clone(), earned_score),
             );
+
+            env.events().publish(
+                (symbol_short!("reput"), Symbol::new(env, "referral_reward")),
+                (referrer, earned_score),
+            );
         }
     }
 
@@ -751,6 +775,31 @@ impl ReputationContract {
             total_score,
             total_weight,
             review_count,
+        })
+    }
+
+    /// Get reputation together with the registered referrer (if any).
+    pub fn get_reputation_with_referrer(
+        env: Env,
+        user: Address,
+    ) -> Result<UserReputationWithReferrer, ReputationError> {
+        let base = Self::get_reputation(env.clone(), user.clone())?;
+        let referrer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Referrer(user.clone()));
+        if referrer.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Referrer(user.clone()), MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+        }
+
+        Ok(UserReputationWithReferrer {
+            user,
+            referrer,
+            total_score: base.total_score,
+            total_weight: base.total_weight,
+            review_count: base.review_count,
         })
     }
 

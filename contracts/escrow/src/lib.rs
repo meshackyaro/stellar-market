@@ -64,6 +64,8 @@ pub enum EscrowError {
     TooManyMilestones = 34,
     /// The fee basis points exceed the maximum permitted limit.
     InvalidFee = 35,
+    /// Proposal execution is time-locked and cannot be executed yet.
+    ProposalTimeLockActive = 36,
 }
 
 /// Privileged actions that can be proposed and approved through the multi-sig flow.
@@ -203,6 +205,7 @@ enum DataKey {
     MultiSigThreshold,   // u32
     MultiSigProposal(u64),
     MultiSigProposalCount,
+    MultiSigExecutionNotBefore(u64),
     RevisionHistory(u64), // Vec<MilestoneRevision> keyed by job_id
     MilestoneSubmittedAt(u64, u32),
     InactivityAutoApproveAt(u64, u32),
@@ -212,6 +215,7 @@ enum DataKey {
 const DEFAULT_PROPOSAL_EXPIRY_SECS: u64 = 7 * 24 * 3600;
 const INACTIVITY_THRESHOLD_SECS: u64 = 7 * 24 * 3600;
 const INACTIVITY_GRACE_SECS: u64 = 3 * 24 * 3600;
+const MULTISIG_TIME_LOCK_SECS: u64 = 48 * 60 * 60;
 
 fn get_job_key(job_id: u64) -> DataKey {
     DataKey::Job(job_id)
@@ -370,17 +374,28 @@ impl EscrowContract {
         let mut approvals = Vec::new(&env);
         approvals.push_back(proposer.clone());
 
+        let now = env.ledger().timestamp();
+        let execution_not_before = match action {
+            AdminAction::Pause | AdminAction::SetTreasury(_) => {
+                now.saturating_add(MULTISIG_TIME_LOCK_SECS)
+            }
+            _ => now,
+        };
+
         let proposal = MultiSigProposal {
             id: count,
             action: action.clone(),
             proposer: proposer.clone(),
             approvals,
             executed: false,
-            created_at: env.ledger().timestamp(),
+            created_at: now,
         };
 
         env.storage().instance().set(&DataKey::MultiSigProposal(count), &proposal);
         env.storage().instance().set(&DataKey::MultiSigProposalCount, &count);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigExecutionNotBefore(count), &execution_not_before);
 
         env.events().publish(
             (symbol_short!("msig"), symbol_short!("proposed")),
@@ -389,7 +404,7 @@ impl EscrowContract {
 
         // Auto-execute if threshold is 1
         let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
-        if threshold == 1 {
+        if threshold == 1 && now >= execution_not_before {
             Self::execute_proposal(&env, count)?;
         }
 
@@ -435,6 +450,15 @@ impl EscrowContract {
 
         if proposal.executed {
             return Err(EscrowError::MultiSigAlreadyExecuted);
+        }
+
+        let not_before: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigExecutionNotBefore(proposal_id))
+            .unwrap_or(proposal.created_at);
+        if env.ledger().timestamp() < not_before {
+            return Err(EscrowError::ProposalTimeLockActive);
         }
 
         match proposal.action.clone() {
@@ -500,6 +524,15 @@ impl EscrowContract {
 
         proposal.executed = true;
         env.storage().instance().set(&DataKey::MultiSigProposal(proposal_id), &proposal);
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::MultiSigExecutionNotBefore(proposal_id))
+        {
+            env.storage()
+                .instance()
+                .remove(&DataKey::MultiSigExecutionNotBefore(proposal_id));
+        }
 
         env.events().publish(
             (symbol_short!("msig"), symbol_short!("executed")),

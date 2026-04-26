@@ -124,6 +124,7 @@ enum DataKey {
     SlashAmount,
     ReputationSlashBps,
     JobDispute(u64),
+    JobDisputes(u64),
 }
 
 fn require_not_paused(env: &Env) -> Result<(), DisputeError> {
@@ -206,6 +207,14 @@ fn bump_dispute_count_ttl(env: &Env) {
 fn bump_job_dispute_ttl(env: &Env, job_id: u64) {
     env.storage().persistent().extend_ttl(
         &DataKey::JobDispute(job_id),
+        MIN_TTL_THRESHOLD,
+        MIN_TTL_EXTEND_TO,
+    );
+}
+
+fn bump_job_disputes_ttl(env: &Env, job_id: u64) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::JobDisputes(job_id),
         MIN_TTL_THRESHOLD,
         MIN_TTL_EXTEND_TO,
     );
@@ -576,6 +585,17 @@ impl DisputeContract {
             .set(&DataKey::JobDispute(job_id), &count);
         bump_job_dispute_ttl(&env, job_id);
 
+        // Maintain job → dispute_ids list so callers can fetch historical disputes.
+        let list_key = DataKey::JobDisputes(job_id);
+        let mut dispute_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or(Vec::new(&env));
+        dispute_ids.push_back(count);
+        env.storage().persistent().set(&list_key, &dispute_ids);
+        bump_job_disputes_ttl(&env, job_id);
+
         // Emit event
         env.events().publish(
             (symbol_short!("dispute"), symbol_short!("raised")),
@@ -812,6 +832,31 @@ impl DisputeContract {
         bump_dispute_ttl(&env, dispute_id);
 
         Some(dispute)
+    }
+
+    /// Look up all historical disputes associated with a job.
+    /// Returns an empty vec when no disputes have ever been raised.
+    pub fn get_disputes_for_job(env: Env, job_id: u64) -> Vec<Dispute> {
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::JobDisputes(job_id))
+            .unwrap_or(Vec::new(&env));
+        bump_job_disputes_ttl(&env, job_id);
+
+        let mut disputes = Vec::<Dispute>::new(&env);
+        for id in ids.iter() {
+            if let Some(dispute) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Dispute>(&DataKey::Dispute(id))
+            {
+                bump_dispute_ttl(&env, id);
+                disputes.push_back(dispute);
+            }
+        }
+
+        disputes
     }
 
     /// Get all votes for a dispute.
