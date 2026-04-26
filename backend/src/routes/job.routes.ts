@@ -176,8 +176,13 @@ router.get(
       if (skills) {
         const skillList = (skills as string)
           .split(",")
-          .map((s: string) => s.trim());
-        where.skills = { hasSome: skillList };
+          .map((s: string) => s.trim())
+          .filter(Boolean);
+        if (skillList.length === 1) {
+          where.skills = { has: skillList[0] };
+        } else if (skillList.length > 1) {
+          where.skills = { hasSome: skillList };
+        }
       } else if (skill) {
         where.skills = { has: skill };
       }
@@ -223,6 +228,7 @@ router.get(
           case "budget_low":
           case "budget_asc":
             return { budget: "asc" };
+          case "created_at":
           case "newest":
           default:
             return { createdAt: "desc" };
@@ -231,20 +237,71 @@ router.get(
 
       // Cursor-based pagination — preferred when `cursor` is supplied.
       if (cursor) {
-        let cursorId: string;
+        const sortDirection: "asc" | "desc" = sort === "oldest" ? "asc" : "desc";
+
+        let cursorId: string | undefined;
+        let cursorCreatedAt: Date | undefined;
         try {
-          ({ id: cursorId } = JSON.parse(
+          const decoded = JSON.parse(
             Buffer.from(cursor, "base64").toString("utf8"),
-          ));
+          ) as { id?: string; createdAt?: string };
+          cursorId = decoded.id;
+          cursorCreatedAt = decoded.createdAt ? new Date(decoded.createdAt) : undefined;
         } catch {
           cursorId = cursor as string;
         }
 
-        // Always sort by createdAt desc + id desc for stable cursor ordering
-        const orderBy: any = [{ createdAt: "desc" }, { id: "desc" }];
+        if (!cursorId || !cursorCreatedAt || Number.isNaN(cursorCreatedAt.getTime())) {
+          const anchor = cursorId
+            ? await prisma.job.findUnique({
+                where: { id: cursorId },
+                select: { id: true, createdAt: true },
+              })
+            : null;
+          if (!anchor) {
+            return { data: [], pagination: { total: 0, page: null, limit: safeLimit, hasNext: false, nextCursor: null } };
+          }
+          cursorId = anchor.id;
+          cursorCreatedAt = anchor.createdAt;
+        }
+
+        const cursorClause =
+          sortDirection === "desc"
+            ? {
+                OR: [
+                  { createdAt: { lt: cursorCreatedAt } },
+                  {
+                    AND: [
+                      { createdAt: cursorCreatedAt },
+                      { id: { lt: cursorId } },
+                    ],
+                  },
+                ],
+              }
+            : {
+                OR: [
+                  { createdAt: { gt: cursorCreatedAt } },
+                  {
+                    AND: [
+                      { createdAt: cursorCreatedAt },
+                      { id: { gt: cursorId } },
+                    ],
+                  },
+                ],
+              };
+
+        const paginatedWhere: any = { ...where };
+        paginatedWhere.AND = Array.isArray(where.AND)
+          ? [...where.AND, cursorClause]
+          : [cursorClause];
+
+        const orderBy: any = [
+          { createdAt: sortDirection },
+          { id: sortDirection },
+        ];
 
         const jobs = await prisma.job.findMany({
-          where,
+          where: paginatedWhere,
           include: {
             client: { select: { id: true, username: true, avatarUrl: true } },
             freelancer: {
@@ -254,8 +311,6 @@ router.get(
             _count: { select: { applications: true } },
           },
           orderBy,
-          cursor: { id: cursorId },
-          skip: 1,
           take: safeLimit + 1,
         });
 
@@ -488,12 +543,12 @@ router.get(
 );
 
 // Get a single job by ID
-router.get(
-  "/:id",
-  validate({ params: getJobByIdParamSchema }),
-  asyncHandler(async (req: AuthRequest, res: Response) => {
-    const id = req.params.id as string;
-    const job = await prisma.job.findFirst({
+	router.get(
+	  "/:id",
+	  validate({ params: getJobByIdParamSchema }),
+	  asyncHandler(async (req: AuthRequest, res: Response) => {
+	    const id = req.params.id as string;
+	    const job = await prisma.job.findFirst({
       where: {
         id,
         deletedAt: null,
@@ -516,14 +571,22 @@ router.get(
       },
     });
 
-    if (!job) {
-      return res.status(404).json({ error: "Job not found." });
-    }
+	    if (!job) {
+	      return res.status(404).json({ error: "Job not found." });
+	    }
 
-    let isSaved = false;
-    if (req.userId) {
-      const user = await prisma.user.findUnique({
-        where: { id: req.userId },
+	    const lastModified = (job as any).updatedAt ?? (job as any).createdAt;
+	    const etag = `W/"job:${id}:${new Date(lastModified).toISOString()}"`;
+	    res.setHeader("ETag", etag);
+	    res.setHeader("Last-Modified", new Date(lastModified).toUTCString());
+	    if (!req.userId && req.headers["if-none-match"] === etag) {
+	      return res.status(304).end();
+	    }
+
+	    let isSaved = false;
+	    if (req.userId) {
+	      const user = await prisma.user.findUnique({
+	        where: { id: req.userId },
         select: { role: true },
       });
 

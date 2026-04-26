@@ -90,15 +90,17 @@ export class NotificationService {
   }) {
     const { userId, type, title, message, metadata } = params;
 
-    // 1. Create DB record
-    const notification = await prisma.notification.create({
-      data: {
-        userId,
-        type,
-        title,
-        message,
-        metadata: metadata || {},
-      },
+    // 1. Create DB record (ensure commit before emitting)
+    const notification = await prisma.$transaction(async (tx) => {
+      return await tx.notification.create({
+        data: {
+          userId,
+          type,
+          title,
+          message,
+          metadata: metadata || {},
+        },
+      });
     });
 
     // 2. Emit real-time event via Socket.IO

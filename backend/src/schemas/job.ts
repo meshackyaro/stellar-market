@@ -51,7 +51,15 @@ export const getJobsQuerySchema = paginationSchema.extend({
   clientId: z.string().min(1).optional(),
   token: z.string().optional(),
   sort: z
-    .enum(["newest", "oldest", "budget_high", "budget_low", "budget_desc", "budget_asc"])
+    .enum([
+      "newest",
+      "oldest",
+      "budget_high",
+      "budget_low",
+      "budget_desc",
+      "budget_asc",
+      "created_at",
+    ])
     .optional(),
      postedAfter: z.string().optional(),
      cursor: z.string().optional(),
