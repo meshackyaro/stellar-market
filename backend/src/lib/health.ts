@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import RedisClient from "./redis";
+import { logger } from "./logger";
 
 export type DependencyHealthStatus = "ok" | "error";
 
@@ -24,7 +25,7 @@ export async function getHealthStatus(
     await prisma.$queryRawUnsafe("SELECT 1");
   } catch (error) {
     checks.database = "error";
-    console.error("Health check database probe failed:", error);
+    logger.error({ err: error }, "Health check database probe failed");
   }
 
   try {
@@ -34,7 +35,7 @@ export async function getHealthStatus(
     await RedisClient.getInstance().ping();
   } catch (error) {
     checks.redis = "error";
-    console.error("Health check Redis probe failed:", error);
+    logger.error({ err: error }, "Health check Redis probe failed");
   }
 
   const healthy = Object.values(checks).every((value) => value === "ok");

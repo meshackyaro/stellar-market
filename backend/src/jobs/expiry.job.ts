@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { NotificationService } from "../services/notification.service";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 
@@ -7,7 +8,7 @@ const ONE_HOUR_MS = 60 * 60 * 1000;
 
 async function expireJobs(): Promise<void> {
   const now = new Date();
-  console.log(`[ExpiryJob] Running at ${now.toISOString()}`);
+  logger.info({ at: now.toISOString() }, "[ExpiryJob] Running");
 
   try {
     // 1. Open jobs past deadline → mark EXPIRED and notify client
@@ -32,7 +33,7 @@ async function expireJobs(): Promise<void> {
         message: `Your job "${job.title}" has expired without being funded and has been closed.`,
       });
 
-      console.log(`[ExpiryJob] Marked OPEN job ${job.id} as EXPIRED`);
+      logger.info({ jobId: job.id }, "[ExpiryJob] Marked OPEN job as EXPIRED");
     }
 
     // 2. Funded jobs past deadline → call expire_job on-chain then mark EXPIRED
@@ -50,7 +51,10 @@ async function expireJobs(): Promise<void> {
         if (job.contractJobId) {
           // Placeholder: on-chain expire_job will be wired here once the
           // companion contract issue is merged.
-          console.log(`[ExpiryJob] expire_job stub for contract job ${job.contractJobId}`);
+          logger.info(
+            { contractJobId: job.contractJobId },
+            "[ExpiryJob] expire_job stub for contract job",
+          );
         }
 
         await (prisma.job as any).update({
@@ -65,22 +69,23 @@ async function expireJobs(): Promise<void> {
           message: `Your funded job "${job.title}" passed its deadline and has been marked as expired. Escrow refund will be processed.`,
         });
 
-        console.log(`[ExpiryJob] Marked FUNDED job ${job.id} as EXPIRED`);
+        logger.info({ jobId: job.id }, "[ExpiryJob] Marked FUNDED job as EXPIRED");
       } catch (err) {
-        console.error(`[ExpiryJob] Failed to expire funded job ${job.id}:`, err);
+        logger.error({ err, jobId: job.id }, "[ExpiryJob] Failed to expire funded job");
       }
     }
 
-    console.log(
-      `[ExpiryJob] Done — expired ${openExpired.length} open and ${fundedExpired.length} funded jobs`,
+    logger.info(
+      { openExpired: openExpired.length, fundedExpired: fundedExpired.length },
+      "[ExpiryJob] Done",
     );
   } catch (err) {
-    console.error("[ExpiryJob] Unhandled error:", err);
+    logger.error({ err }, "[ExpiryJob] Unhandled error");
   }
 }
 
 export function startExpiryJob(): void {
   expireJobs();
   setInterval(expireJobs, ONE_HOUR_MS);
-  console.log("[ExpiryJob] Scheduled — runs every hour");
+  logger.info("[ExpiryJob] Scheduled — runs every hour");
 }

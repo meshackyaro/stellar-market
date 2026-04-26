@@ -12,6 +12,7 @@ import type { PrismaClient } from "@prisma/client";
 import { MilestoneStatus } from "@prisma/client";
 import { config } from "../config";
 import { getRequestId } from "../lib/request-context";
+import { logger } from "../lib/logger";
 
 const networkPassphrase = config.stellar.networkPassphrase;
 const contractId = config.stellar.escrowContractId;
@@ -375,7 +376,7 @@ export class ContractService {
           return status;
       }
     } catch (error) {
-      console.error(`Error fetching on-chain status for job ${onChainJobId}:`, error);
+      logger.error({ err: error, onChainJobId }, "Error fetching on-chain status for job");
       throw error;
     }
   }
@@ -564,7 +565,10 @@ export class ContractService {
       if (!raw) return null;
       return this.parseRevisionProposalRaw(raw);
     } catch (error) {
-      console.warn(`get_revision_proposal simulation failed for ${onChainJobId}:`, error);
+      logger.warn(
+        { err: error, onChainJobId },
+        "get_revision_proposal simulation failed",
+      );
       return null;
     }
   }

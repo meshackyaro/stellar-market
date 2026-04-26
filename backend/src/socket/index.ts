@@ -3,6 +3,7 @@ import { Server as SocketServer, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import { config } from "../config";
 import { registerMessageHandlers } from "./messageHandlers";
+import { logger } from "../lib/logger";
 
 export interface AuthenticatedSocket extends Socket {
   data: {
@@ -45,7 +46,7 @@ export function initSocket(httpServer: HttpServer): SocketServer {
 
     socket.join(`user:${userId}`);
     joinedRooms.add(`user:${userId}`);
-    console.log(`Socket connected: user=${userId} socket=${socket.id}`);
+    logger.info({ userId, socketId: socket.id }, "Socket connected");
 
     registerMessageHandlers(io, authedSocket);
 
@@ -53,7 +54,7 @@ export function initSocket(httpServer: HttpServer): SocketServer {
       for (const room of joinedRooms) {
         socket.leave(room);
       }
-      console.log(`Socket disconnected: user=${userId} socket=${socket.id}`);
+      logger.info({ userId, socketId: socket.id }, "Socket disconnected");
     });
   });
 

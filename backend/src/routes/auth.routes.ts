@@ -11,6 +11,11 @@ import { authenticate, AuthRequest } from "../middleware/auth";
 import { asyncHandler } from "../middleware/error";
 import { encrypt, decrypt } from "../utils/encryption";
 import {
+  forgotPasswordRateLimiter,
+  loginRateLimiter,
+  registerRateLimiter,
+} from "../middleware/rate-limit";
+import {
   registerSchema,
   loginSchema,
   forgotPasswordSchema,
@@ -113,8 +118,9 @@ router.post(
    *           application/json:
    *             schema:
    *               $ref: '#/components/schemas/ErrorResponse'
-   */
+  */
   "/register",
+  registerRateLimiter,
   validate({ body: registerSchema }),
   asyncHandler(async (req: Request, res: Response) => {
     const { stellarAddress, email, name, password, role } = req.body;
@@ -147,6 +153,7 @@ router.post(
         role: role ?? "FREELANCER",
         emailVerified: false,
         emailVerificationToken: hashed,
+        notificationPreference: { create: {} },
       },
     });
 
@@ -175,6 +182,7 @@ router.post(
 // Login
 router.post(
   "/login",
+  loginRateLimiter,
   validate({ body: loginSchema }),
   asyncHandler(async (req: Request, res: Response) => {
     const { email, password } = req.body;
@@ -471,6 +479,7 @@ router.post(
 // Forgot password — generates hashed reset token, sends email
 router.post(
   "/forgot-password",
+  forgotPasswordRateLimiter,
   validate({ body: forgotPasswordSchema }),
   asyncHandler(async (req: Request, res: Response) => {
     const { email } = req.body;

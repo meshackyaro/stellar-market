@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../config";
 import { PrismaClient, UserRole } from "@prisma/client";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 
@@ -146,7 +147,7 @@ export const checkSuspension = async (
 
     next();
   } catch (error) {
-    console.error("Error checking suspension status:", error);
+    logger.error({ err: error }, "Error checking suspension status");
     next();
   }
 };

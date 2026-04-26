@@ -2,6 +2,7 @@ import { rpc, scValToNative } from "@stellar/stellar-sdk";
 import { PrismaClient, BadgeTier } from "@prisma/client";
 import { config } from "../config";
 import { NotificationService } from "./notification.service";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 const server = new rpc.Server(config.stellar.rpcUrl);
@@ -80,7 +81,7 @@ async function handleJobCreated(event: SorobanEvent): Promise<void> {
     data: { escrowStatus: "UNFUNDED" },
   });
 
-  console.log(`[HorizonListener] JobCreated — contractJobId=${onChainJobId}`);
+  logger.info({ contractJobId: onChainJobId }, "[HorizonListener] JobCreated");
 }
 
 /**
@@ -102,7 +103,7 @@ async function handleJobFunded(event: SorobanEvent): Promise<void> {
     data: { escrowStatus: "FUNDED", status: "IN_PROGRESS" },
   });
 
-  console.log(`[HorizonListener] JobFunded — contractJobId=${onChainJobId}`);
+  logger.info({ contractJobId: onChainJobId }, "[HorizonListener] JobFunded");
 }
 
 /**
@@ -136,7 +137,7 @@ async function handlePaymentReleased(event: SorobanEvent): Promise<void> {
         notifyIds.map((userId) =>
           NotificationService.sendNotification({
             userId,
-            type: "MILESTONE_APPROVED",
+            type: "PAYMENT_RELEASED",
             title: "Payment Released",
             message: `All payments for "${job.title}" have been released on-chain.`,
             metadata: { contractJobId: onChainJobId },
@@ -147,7 +148,7 @@ async function handlePaymentReleased(event: SorobanEvent): Promise<void> {
     }
   }
 
-  console.log(`[HorizonListener] PaymentReleased — contractJobId=${onChainJobId}`);
+  logger.info({ contractJobId: onChainJobId }, "[HorizonListener] PaymentReleased");
 }
 
 /**
@@ -170,7 +171,7 @@ async function handleDisputeOpened(event: SorobanEvent): Promise<void> {
   });
 
   if (!job) {
-    console.warn(`[HorizonListener] DisputeOpened — no DB job for contractJobId=${onChainJobId}`);
+    logger.warn({ contractJobId: onChainJobId }, "[HorizonListener] DisputeOpened — no DB job");
     return;
   }
 
@@ -209,7 +210,7 @@ async function handleDisputeOpened(event: SorobanEvent): Promise<void> {
     )
   );
 
-  console.log(`[HorizonListener] DisputeOpened — onChainDisputeId=${onChainDisputeId}`);
+  logger.info({ onChainDisputeId }, "[HorizonListener] DisputeOpened");
 }
 
 /**
@@ -249,7 +250,10 @@ async function handleDisputeResolved(event: SorobanEvent): Promise<void> {
   });
 
   if (!dispute) {
-    console.warn(`[HorizonListener] DisputeResolved — no DB dispute for onChainDisputeId=${onChainDisputeId}`);
+    logger.warn(
+      { onChainDisputeId },
+      "[HorizonListener] DisputeResolved — no DB dispute",
+    );
     return;
   }
 
@@ -288,7 +292,7 @@ async function handleDisputeResolved(event: SorobanEvent): Promise<void> {
     )
   );
 
-  console.log(`[HorizonListener] DisputeResolved — onChainDisputeId=${onChainDisputeId} outcome=${outcome}`);
+  logger.info({ onChainDisputeId, outcome }, "[HorizonListener] DisputeResolved");
 }
 
 /**
@@ -312,7 +316,7 @@ async function handleBadgeAwarded(event: SorobanEvent): Promise<void> {
   });
 
   if (!user) {
-    console.warn(`[HorizonListener] BadgeAwarded — no user for wallet=${walletAddress}`);
+    logger.warn({ walletAddress }, "[HorizonListener] BadgeAwarded — no user");
     return;
   }
 
@@ -338,7 +342,7 @@ async function handleBadgeAwarded(event: SorobanEvent): Promise<void> {
     });
   }
 
-  console.log(`[HorizonListener] BadgeAwarded — wallet=${walletAddress} tier=${tier}`);
+  logger.info({ walletAddress, tier }, "[HorizonListener] BadgeAwarded");
 }
 
 // ─── event dispatch ───────────────────────────────────────────────────────────
@@ -362,9 +366,9 @@ async function processEvent(event: SorobanEvent): Promise<void> {
       if (name === "badge") return await handleBadgeAwarded(event);
     }
   } catch (err) {
-    console.error(
-      `[HorizonListener] Error processing event ${contract}/${name} at ledger ${event.ledger}:`,
-      err
+    logger.error(
+      { err, contract, name, ledger: event.ledger },
+      "[HorizonListener] Error processing event",
     );
   }
 }
@@ -391,7 +395,7 @@ async function poll(): Promise<void> {
       // First run — start from the current tip so we don't replay all history
       startLedger = latest.sequence;
       await setLastIndexedLedger(startLedger);
-      console.log(`[HorizonListener] First run — starting from ledger ${startLedger}`);
+      logger.info({ startLedger }, "[HorizonListener] First run — starting from ledger");
       return;
     }
     startLedger = lastLedger + 1;
@@ -400,7 +404,7 @@ async function poll(): Promise<void> {
       return; // nothing new
     }
   } catch (err) {
-    console.error("[HorizonListener] Failed to fetch latest ledger:", err);
+    logger.error({ err }, "[HorizonListener] Failed to fetch latest ledger");
     return;
   }
 
@@ -419,13 +423,13 @@ async function poll(): Promise<void> {
     // Reset to the latest ledger so we don't loop on the same bad cursor.
     const msg: string = err?.message ?? "";
     if (msg.includes("startLedger") || msg.includes("ledger")) {
-      console.warn("[HorizonListener] startLedger out of retention window, resetting cursor");
+      logger.warn("[HorizonListener] startLedger out of retention window, resetting cursor");
       try {
         const latest = await server.getLatestLedger();
         await setLastIndexedLedger(latest.sequence);
       } catch (_) {}
     } else {
-      console.error("[HorizonListener] getEvents error:", err);
+      logger.error({ err }, "[HorizonListener] getEvents error");
     }
     return;
   }
@@ -454,12 +458,15 @@ export function startHorizonListener(): void {
   ].filter(Boolean);
 
   if (contractIds.length === 0) {
-    console.log("[HorizonListener] No contract IDs configured — skipping");
+    logger.info("[HorizonListener] No contract IDs configured — skipping");
     return;
   }
 
-  console.log("[HorizonListener] Starting — polling every", POLL_INTERVAL_MS / 1_000, "s");
-  console.log("[HorizonListener] Watching contracts:", contractIds);
+  logger.info(
+    { intervalSeconds: POLL_INTERVAL_MS / 1_000 },
+    "[HorizonListener] Starting",
+  );
+  logger.info({ contractIds }, "[HorizonListener] Watching contracts");
 
   poll();
   intervalId = setInterval(() => void poll(), POLL_INTERVAL_MS);
@@ -469,6 +476,6 @@ export function stopHorizonListener(): void {
   if (intervalId) {
     clearInterval(intervalId);
     intervalId = null;
-    console.log("[HorizonListener] Stopped");
+    logger.info("[HorizonListener] Stopped");
   }
 }

@@ -4,6 +4,7 @@ import { authenticate, AuthRequest } from "../middleware/auth";
 import { validate } from "../middleware/validation";
 import { asyncHandler } from "../middleware/error";
 import { NotificationService } from "../services/notification.service";
+import { logger } from "../lib/logger";
 import {
   createMessageSchema,
   updateMessageSchema,
@@ -111,7 +112,7 @@ router.get("/unread-count", authenticate, async (req: AuthRequest, res: Response
 
     res.json({ count });
   } catch (error) {
-    console.error("Unread count error:", error);
+    logger.error({ err: error }, "Unread count error");
     res.status(500).json({ error: "Internal server error." });
   }
 });
@@ -162,7 +163,7 @@ router.get("/conversations", authenticate, async (req: AuthRequest, res: Respons
     const conversations = Array.from(conversationMap.values());
     res.json(conversations);
   } catch (error) {
-    console.error("Conversations error:", error);
+    logger.error({ err: error }, "Conversations error");
     res.status(500).json({ error: "Internal server error." });
   }
 });

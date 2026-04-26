@@ -1,6 +1,7 @@
 import Redis from "ioredis";
 import RedisClient from "../lib/redis";
 import { RecommendationService } from "./recommendation.service";
+import { logger } from "../lib/logger";
 
 const RECOMMENDATION_REBUILD_QUEUE_KEY = "queue:recommendations:rebuild";
 const RECOMMENDATION_REBUILD_INTERVAL_MS = 2_000;
@@ -27,7 +28,7 @@ async function enqueue(job: RecommendationRebuildJob): Promise<void> {
       JSON.stringify(job),
     );
   } catch (error) {
-    console.warn("Failed to enqueue recommendation rebuild job:", error);
+    logger.warn({ err: error }, "Failed to enqueue recommendation rebuild job");
   }
 }
 
@@ -55,11 +56,11 @@ async function drainQueueOnce(): Promise<void> {
         const payload = JSON.parse(rawJob) as RecommendationRebuildJob;
         await RecommendationService.rebuildRecommendationsForJob(payload.jobId);
       } catch (error) {
-        console.error("Failed to process recommendation rebuild job:", error);
+        logger.error({ err: error }, "Failed to process recommendation rebuild job");
       }
     }
   } catch (error) {
-    console.warn("Recommendation rebuild worker is unavailable:", error);
+    logger.warn({ err: error }, "Recommendation rebuild worker is unavailable");
   } finally {
     workerRunning = false;
   }

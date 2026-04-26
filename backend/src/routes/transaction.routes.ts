@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import { authenticate, AuthRequest } from "../middleware/auth";
 import { validate } from "../middleware/validation";
+import { logger } from "../lib/logger";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -131,7 +132,7 @@ router.post(
 
       res.status(201).json(transaction);
     } catch (error) {
-      console.error("Error creating transaction:", error);
+      logger.error({ err: error }, "Error creating transaction");
       res.status(500).json({ error: "Failed to create transaction" });
     }
   },
@@ -234,7 +235,7 @@ router.get(
         },
       });
     } catch (error) {
-      console.error("Error fetching transactions:", error);
+      logger.error({ err: error }, "Error fetching transactions");
       res.status(500).json({ error: "Failed to fetch transactions" });
     }
   },
@@ -521,7 +522,7 @@ router.get(
 
       res.json(response);
     } catch (error) {
-      console.error("Error fetching transaction history:", error);
+      logger.error({ err: error }, "Error fetching transaction history");
       res.status(500).json({ error: "Failed to fetch transaction history" });
     }
   },
@@ -695,7 +696,7 @@ router.get(
       
       res.end();
     } catch (error) {
-      console.error("Error exporting transaction stream:", error);
+      logger.error({ err: error }, "Error exporting transaction stream");
       if (!res.headersSent) {
         res.status(500).json({ error: "Failed to export transaction history" });
       } else {
@@ -791,7 +792,7 @@ router.get(
         },
       });
     } catch (error) {
-      console.error("Error fetching transactions by token:", error);
+      logger.error({ err: error }, "Error fetching transactions by token");
       res.status(500).json({ error: "Failed to fetch transactions by token" });
     }
   },
@@ -887,7 +888,7 @@ router.get(
         },
       });
     } catch (error) {
-      console.error("Error fetching counterparties:", error);
+      logger.error({ err: error }, "Error fetching counterparties");
       res.status(500).json({ error: "Failed to fetch counterparties" });
     }
   },
@@ -977,7 +978,7 @@ router.get(
         recentTransactions,
       });
     } catch (error) {
-      console.error("Error fetching transaction summary:", error);
+      logger.error({ err: error }, "Error fetching transaction summary");
       res.status(500).json({ error: "Failed to fetch transaction summary" });
     }
   },
@@ -1046,7 +1047,7 @@ router.get(
         },
       });
     } catch (error) {
-      console.error("Error fetching job transactions:", error);
+      logger.error({ err: error }, "Error fetching job transactions");
       res.status(500).json({ error: "Failed to fetch job transactions" });
     }
   },
@@ -1109,7 +1110,7 @@ router.get(
 
       res.json(transaction);
     } catch (error) {
-      console.error("Error fetching transaction:", error);
+      logger.error({ err: error }, "Error fetching transaction");
       res.status(500).json({ error: "Failed to fetch transaction" });
     }
   },

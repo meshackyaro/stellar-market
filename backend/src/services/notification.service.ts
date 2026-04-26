@@ -1,5 +1,8 @@
 import { PrismaClient, NotificationType } from "@prisma/client";
 import { getIo } from "../socket";
+import { EmailService } from "./email.service";
+import { config } from "../config";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 
@@ -73,7 +76,7 @@ export class NotificationService {
 
       return null; // Batched notifications don't return immediately
     } catch (error) {
-      console.error("Error sending notification:", error);
+      logger.error({ err: error }, "Error sending notification");
       return null;
     }
   }
@@ -103,11 +106,19 @@ export class NotificationService {
       });
     });
 
+    void this.maybeSendEmailForNotification({
+      userId,
+      type,
+      title,
+      message,
+      metadata: metadata || {},
+    });
+
     // 2. Emit real-time event via Socket.IO
     const io = getIo();
     io.to(`user:${userId}`).emit("notification:new", notification);
 
-    console.log(`Notification sent to user ${userId}: ${type} - ${title}`);
+    logger.info({ userId, type, title }, "Notification sent");
     return notification;
   }
 
@@ -193,7 +204,7 @@ export class NotificationService {
         },
       });
     } catch (error) {
-      console.error("Error flushing notification batch:", error);
+      logger.error({ err: error }, "Error flushing notification batch");
     }
   }
 
@@ -267,6 +278,82 @@ export class NotificationService {
       clearTimeout(batch.timeoutId);
     }
     this.batches.clear();
+  }
+
+  private static async maybeSendEmailForNotification(params: {
+    userId: string;
+    type: NotificationType;
+    title: string;
+    message: string;
+    metadata: any;
+  }): Promise<void> {
+    const { userId, type, title, message, metadata } = params;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        email: true,
+        emailVerified: true,
+        notificationPreference: true,
+      },
+    });
+
+    const email = user?.email;
+    if (!email || !user?.emailVerified) return;
+
+    const pref = user.notificationPreference;
+    if ((pref?.emailEnabled ?? true) === false) return;
+
+    const shouldSend = (() => {
+      switch (type) {
+        case "DISPUTE_RAISED":
+          return pref?.emailDisputeOpened ?? true;
+        case "MILESTONE_APPROVED":
+          return pref?.emailMilestoneApproved ?? true;
+        case "PAYMENT_RELEASED":
+          return pref?.emailPaymentReleased ?? true;
+        case "APPLICATION_ACCEPTED":
+          return pref?.emailApplicationAccepted ?? true;
+        default:
+          return false;
+      }
+    })();
+
+    if (!shouldSend) return;
+
+    const actionUrl =
+      typeof metadata?.jobId === "string"
+        ? `${config.frontendUrl}/jobs/${metadata.jobId}`
+        : config.frontendUrl;
+
+    const event = (() => {
+      switch (type) {
+        case "DISPUTE_RAISED":
+          return "dispute.opened" as const;
+        case "MILESTONE_APPROVED":
+          return "milestone.approved" as const;
+        case "PAYMENT_RELEASED":
+          return "payment.released" as const;
+        case "APPLICATION_ACCEPTED":
+          return "application.accepted" as const;
+        default:
+          return null;
+      }
+    })();
+
+    if (!event) return;
+
+    try {
+      await EmailService.sendEventEmail({
+        to: email,
+        event,
+        title,
+        message,
+        actionUrl,
+      });
+    } catch (error) {
+      logger.error({ err: error, userId, type }, "Failed to send notification email");
+    }
   }
 
   /**

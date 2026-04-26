@@ -70,6 +70,7 @@ enum NotificationType {
   APPLICATION_REJECTED
   MILESTONE_SUBMITTED
   MILESTONE_APPROVED
+  PAYMENT_RELEASED
   DISPUTE_RAISED
   DISPUTE_RESOLVED
   NEW_MESSAGE
@@ -138,6 +139,18 @@ model User {
   savedJobs          SavedJob[]     @relation("SavedJobs")
   reportsGiven       Report[]       @relation("ReportsGiven")
   badges             Badge[]
+  notificationPreference NotificationPreference?
+}
+
+model NotificationPreference {
+  userId                 String   @id
+  emailEnabled           Boolean  @default(true)
+  emailDisputeOpened     Boolean  @default(true)
+  emailMilestoneApproved Boolean  @default(true)
+  emailPaymentReleased   Boolean  @default(true)
+  emailApplicationAccepted Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Job {

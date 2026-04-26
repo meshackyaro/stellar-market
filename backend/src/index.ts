@@ -7,8 +7,6 @@ import { config } from "./config";
 import routes from "./routes";
 import {
   globalRateLimiter,
-  authRateLimiter,
-  forgotPasswordRateLimiter,
   writeRateLimiter,
 } from "./middleware/rate-limit";
 import { sanitizeInput } from "./middleware/sanitize";
@@ -17,7 +15,7 @@ import { requestIdMiddleware } from "./middleware/request-id";
 import { initSocket } from "./socket";
 import { startExpiryJob } from "./jobs/expiry.job";
 import { startHorizonListener, stopHorizonListener } from "./services/horizon-listener.service";
-import { installRequestIdConsolePatch } from "./lib/logger";
+import { installRequestIdConsolePatch, logger } from "./lib/logger";
 import { getHealthStatus } from "./lib/health";
 import { RecommendationQueueService } from "./services/recommendation-queue.service";
 
@@ -65,9 +63,18 @@ app.get("/health", async (_req, res) => {
   res.status(health.status === "ok" ? 200 : 503).json(health);
 });
 
-// Rate limiting
-app.use("/api/auth", authRateLimiter);
-app.use("/api/auth/forgot-password", forgotPasswordRateLimiter);
+// Database-only health probe (used by some platforms/LB checks)
+app.get("/health/db", async (_req, res) => {
+  try {
+    await prisma.$queryRawUnsafe("SELECT 1");
+    res.status(200).json({ status: "ok" });
+  } catch (error) {
+    logger.error({ err: error }, "Database health probe failed");
+    res.status(503).json({ status: "error" });
+  }
+});
+
+// Rate limiting (route-specific auth limiters are applied in auth router)
 
 // Write rate limiting (applied before routes for POST mutations)
 app.use("/api/jobs", writeRateLimiter);
@@ -90,7 +97,7 @@ app.use(errorHandler);
 
 function startServer(): void {
   httpServer.listen(config.port, () => {
-    console.log(`StellarMarket API running on port ${config.port}`);
+    logger.info({ port: config.port }, "StellarMarket API running");
     startExpiryJob();
     startHorizonListener();
     RecommendationQueueService.startWorker();
@@ -98,7 +105,7 @@ function startServer(): void {
 }
 
 async function gracefulShutdown(signal: string): Promise<void> {
-  console.log(`${signal} received, shutting down gracefully...`);
+  logger.info({ signal }, "Shutting down gracefully");
 
   stopHorizonListener();
   RecommendationQueueService.stopWorker();
@@ -108,7 +115,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   await NotificationService.flushAllBatches();
 
   httpServer.close(() => {
-    console.log("Server closed");
+    logger.info("Server closed");
     process.exit(0);
   });
 }

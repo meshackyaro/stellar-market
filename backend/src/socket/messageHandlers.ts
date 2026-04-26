@@ -1,6 +1,7 @@
 import { Server as SocketServer } from "socket.io";
 import { PrismaClient } from "@prisma/client";
 import { AuthenticatedSocket } from "./index";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 
@@ -40,7 +41,7 @@ export function registerMessageHandlers(
         // Also emit back to sender (so other sender tabs update instantly)
         socket.emit("new_message", message);
       } catch (err) {
-        console.error("send_message error:", err);
+        logger.error({ err, senderId, receiverId }, "send_message error");
         socket.emit("error", { message: "Failed to send message." });
       }
     }
@@ -70,7 +71,7 @@ export function registerMessageHandlers(
         byUserId: senderId,
       });
     } catch (err) {
-      console.error("mark_read error:", err);
+      logger.error({ err, senderId, originalSenderId }, "mark_read error");
       socket.emit("error", { message: "Failed to mark messages as read." });
     }
   });

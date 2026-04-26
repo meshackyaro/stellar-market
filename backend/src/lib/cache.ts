@@ -1,4 +1,5 @@
 import RedisClient from "./redis";
+import { logger } from "./logger";
 
 interface CacheOptions {
   ttl?: number; // Time to live in seconds
@@ -34,7 +35,7 @@ export async function cache<T>(
     const cached = await redis.get(key);
     
     if (cached) {
-      console.log(`Cache HIT for key: ${key}`);
+      logger.debug({ key }, "Cache HIT");
       return {
         data: JSON.parse(cached) as T,
         hit: true,
@@ -42,19 +43,19 @@ export async function cache<T>(
     }
 
     // Cache miss - execute the function
-    console.log(`Cache MISS for key: ${key}`);
+    logger.debug({ key }, "Cache MISS");
     const result = await fn();
     
     // Cache the result
     await redis.setex(key, ttl, JSON.stringify(result));
-    console.log(`Cached data for key: ${key} with TTL: ${ttl}s`);
+    logger.debug({ key, ttl }, "Cached data");
     
     return {
       data: result,
       hit: false,
     };
   } catch (error) {
-    console.warn(`Cache error for key ${key}, falling back to direct execution:`, error);
+    logger.warn({ err: error, key }, "Cache error, falling back to direct execution");
     // Graceful degradation - execute the function directly
     const result = await fn();
     return {
@@ -71,7 +72,7 @@ export async function cache<T>(
 export async function invalidateCache(pattern: string): Promise<void> {
   try {
     if (!RedisClient.isRedisConnected()) {
-      console.log("Redis not connected, skipping cache invalidation");
+      logger.debug("Redis not connected, skipping cache invalidation");
       return;
     }
 
@@ -80,10 +81,10 @@ export async function invalidateCache(pattern: string): Promise<void> {
     
     if (keys.length > 0) {
       await redis.del(...keys);
-      console.log(`Invalidated ${keys.length} cache keys matching pattern: ${pattern}`);
+      logger.debug({ count: keys.length, pattern }, "Invalidated cache keys");
     }
   } catch (error) {
-    console.warn(`Cache invalidation error for pattern ${pattern}:`, error);
+    logger.warn({ err: error, pattern }, "Cache invalidation error");
   }
 }
 
@@ -94,15 +95,15 @@ export async function invalidateCache(pattern: string): Promise<void> {
 export async function invalidateCacheKey(key: string): Promise<void> {
   try {
     if (!RedisClient.isRedisConnected()) {
-      console.log("Redis not connected, skipping cache invalidation");
+      logger.debug("Redis not connected, skipping cache invalidation");
       return;
     }
 
     const redis = RedisClient.getInstance();
     await redis.del(key);
-    console.log(`Invalidated cache key: ${key}`);
+    logger.debug({ key }, "Invalidated cache key");
   } catch (error) {
-    console.warn(`Cache invalidation error for key ${key}:`, error);
+    logger.warn({ err: error, key }, "Cache invalidation error");
   }
 }
 
