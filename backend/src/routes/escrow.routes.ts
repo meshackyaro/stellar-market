@@ -6,6 +6,7 @@ import { ContractService } from "../services/contract.service";
 import { NotificationService } from "../services/notification.service";
 import { config } from "../config";
 import {
+  invalidateCache,
   invalidateCacheKey,
   generateJobCacheKey,
   generateJobOnChainStatusCacheKey,
@@ -361,6 +362,7 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
       data: { contractDeadline: new Date(newDeadline) },
     });
   } else if (type === "SUBMIT_MILESTONE" && milestoneId) {
+    let affectedJobId: string | null = null;
     await prisma.$transaction(async (tx) => {
       const updatedMilestone = await tx.milestone.update({
         where: { id: milestoneId },
@@ -369,6 +371,7 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
       });
 
       if (!updatedMilestone.jobId) return;
+      affectedJobId = updatedMilestone.jobId;
 
       await NotificationService.sendNotification({
         userId: updatedMilestone.job.clientId,
@@ -378,7 +381,13 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
         metadata: { jobId: updatedMilestone.jobId, milestoneId: updatedMilestone.id },
       });
     });
+    if (affectedJobId) {
+      await invalidateCache("jobs:list:*");
+      await invalidateCacheKey(generateJobOnChainStatusCacheKey(affectedJobId));
+      await invalidateCacheKey(generateJobCacheKey(affectedJobId));
+    }
   } else if (type === "APPROVE_MILESTONE" && milestoneId) {
+    let affectedJobId: string | null = null;
     await prisma.$transaction(async (tx) => {
       // Step 1: Update milestone status
       const updatedMilestone = await tx.milestone.update({
@@ -388,6 +397,7 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
       });
 
       if (!updatedMilestone.jobId) return;
+      affectedJobId = updatedMilestone.jobId;
 
       // Step 2: Check if all milestones are approved to update job status
       const allMilestones = await tx.milestone.findMany({ 
@@ -415,6 +425,11 @@ router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, r
         });
       }
     });
+    if (affectedJobId) {
+      await invalidateCache("jobs:list:*");
+      await invalidateCacheKey(generateJobOnChainStatusCacheKey(affectedJobId));
+      await invalidateCacheKey(generateJobCacheKey(affectedJobId));
+    }
   } else if (type === "PROPOSE_REVISION" && jobId) {
     await invalidateCacheKey(generateJobOnChainStatusCacheKey(jobId));
     await invalidateCacheKey(generateJobCacheKey(jobId));

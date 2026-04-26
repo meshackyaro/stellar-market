@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String,
-    Vec,
+    Symbol, Vec,
 };
 mod escrow {
     use soroban_sdk::{contracttype, Address, String, Vec};
@@ -104,6 +104,16 @@ pub struct Review {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UserReputation {
     pub user: Address,
+    pub total_score: u64,
+    pub total_weight: u64,
+    pub review_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserReputationWithReferrer {
+    pub user: Address,
+    pub referrer: Option<Address>,
     pub total_score: u64,
     pub total_weight: u64,
     pub review_count: u32,
@@ -219,6 +229,7 @@ enum DataKey {
     Leaderboard,
     StakeBalance(Address),
     ReviewAppeal(Address, Address, u64),
+    DisputeContract,
 }
 
 fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
@@ -611,6 +622,15 @@ impl ReputationContract {
         Ok(())
     }
 
+    /// Alias for `register_referral` using the naming from the public API proposal.
+    pub fn register_with_referrer(
+        env: Env,
+        user: Address,
+        referrer: Address,
+    ) -> Result<(), ReputationError> {
+        Self::register_referral(env, user, referrer)
+    }
+
     /// Retrieve the stats for a referrer
     pub fn get_referral_stats(env: Env, referrer: Address) -> ReferralStats {
         let stats_key = DataKey::ReferralStats(referrer.clone());
@@ -719,6 +739,11 @@ impl ReputationContract {
                 (symbol_short!("reput"), symbol_short!("ref_rwrd")),
                 (referrer.clone(), earned_score, user.clone()),
             );
+
+            env.events().publish(
+                (symbol_short!("reput"), Symbol::new(env, "referral_reward")),
+                (referrer, earned_score),
+            );
         }
     }
 
@@ -750,6 +775,31 @@ impl ReputationContract {
             total_score,
             total_weight,
             review_count,
+        })
+    }
+
+    /// Get reputation together with the registered referrer (if any).
+    pub fn get_reputation_with_referrer(
+        env: Env,
+        user: Address,
+    ) -> Result<UserReputationWithReferrer, ReputationError> {
+        let base = Self::get_reputation(env.clone(), user.clone())?;
+        let referrer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Referrer(user.clone()));
+        if referrer.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Referrer(user.clone()), MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+        }
+
+        Ok(UserReputationWithReferrer {
+            user,
+            referrer,
+            total_score: base.total_score,
+            total_weight: base.total_weight,
+            review_count: base.review_count,
         })
     }
 
@@ -788,6 +838,72 @@ impl ReputationContract {
             .set(&DataKey::RateLimit, &RATE_LIMIT_LEDGERS_DEFAULT);
         env.storage().instance().set(&DataKey::Paused, &false);
         bump_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Configure the dispute contract allowed to slash reputation.
+    /// This is a privileged action and must be performed by a registered signer.
+    pub fn set_dispute_contract(
+        env: Env,
+        signer: Address,
+        dispute_contract: Address,
+    ) -> Result<(), ReputationError> {
+        signer.require_auth();
+        if !is_signer(&env, &signer) {
+            return Err(ReputationError::NotAdmin);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeContract, &dispute_contract);
+        bump_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("reput"), Symbol::new(&env, "dispute_set")),
+            (signer, dispute_contract),
+        );
+
+        Ok(())
+    }
+
+    /// Slash a user's reputation score. Callable only by the configured dispute contract.
+    pub fn slash_reputation(
+        env: Env,
+        user: Address,
+        job_id: u64,
+        amount: u64,
+        reason: String,
+    ) -> Result<(), ReputationError> {
+        require_not_paused(&env)?;
+
+        let dispute_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeContract)
+            .ok_or(ReputationError::NotInitialized)?;
+        dispute_contract.require_auth();
+
+        let rep_key = DataKey::Reputation(user.clone());
+        let mut reputation: UserReputation = env
+            .storage()
+            .persistent()
+            .get(&rep_key)
+            .unwrap_or(UserReputation {
+                user: user.clone(),
+                total_score: 0,
+                total_weight: 0,
+                review_count: 0,
+            });
+
+        reputation.total_score = reputation.total_score.saturating_sub(amount);
+        env.storage().persistent().set(&rep_key, &reputation);
+        bump_reputation_ttl(&env, &user);
+
+        env.events().publish(
+            (symbol_short!("reput"), Symbol::new(&env, "reputation_slashed")),
+            (user, job_id, amount, reason),
+        );
+
         Ok(())
     }
 
