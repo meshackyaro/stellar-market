@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String,
-    Vec,
+    Symbol, Vec,
 };
 mod escrow {
     use soroban_sdk::{contracttype, Address, String, Vec};
@@ -219,6 +219,7 @@ enum DataKey {
     Leaderboard,
     StakeBalance(Address),
     ReviewAppeal(Address, Address, u64),
+    DisputeContract,
 }
 
 fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
@@ -788,6 +789,72 @@ impl ReputationContract {
             .set(&DataKey::RateLimit, &RATE_LIMIT_LEDGERS_DEFAULT);
         env.storage().instance().set(&DataKey::Paused, &false);
         bump_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Configure the dispute contract allowed to slash reputation.
+    /// This is a privileged action and must be performed by a registered signer.
+    pub fn set_dispute_contract(
+        env: Env,
+        signer: Address,
+        dispute_contract: Address,
+    ) -> Result<(), ReputationError> {
+        signer.require_auth();
+        if !is_signer(&env, &signer) {
+            return Err(ReputationError::NotAdmin);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::DisputeContract, &dispute_contract);
+        bump_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("reput"), Symbol::new(&env, "dispute_set")),
+            (signer, dispute_contract),
+        );
+
+        Ok(())
+    }
+
+    /// Slash a user's reputation score. Callable only by the configured dispute contract.
+    pub fn slash_reputation(
+        env: Env,
+        user: Address,
+        job_id: u64,
+        amount: u64,
+        reason: String,
+    ) -> Result<(), ReputationError> {
+        require_not_paused(&env)?;
+
+        let dispute_contract: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::DisputeContract)
+            .ok_or(ReputationError::NotInitialized)?;
+        dispute_contract.require_auth();
+
+        let rep_key = DataKey::Reputation(user.clone());
+        let mut reputation: UserReputation = env
+            .storage()
+            .persistent()
+            .get(&rep_key)
+            .unwrap_or(UserReputation {
+                user: user.clone(),
+                total_score: 0,
+                total_weight: 0,
+                review_count: 0,
+            });
+
+        reputation.total_score = reputation.total_score.saturating_sub(amount);
+        env.storage().persistent().set(&rep_key, &reputation);
+        bump_reputation_ttl(&env, &user);
+
+        env.events().publish(
+            (symbol_short!("reput"), Symbol::new(&env, "reputation_slashed")),
+            (user, job_id, amount, reason),
+        );
+
         Ok(())
     }
 

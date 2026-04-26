@@ -110,6 +110,7 @@ pub enum DisputeResolution {
     ClientWins,
     FreelancerWins,
     RefundBoth,
+    RefundSplit(u32),
     Escalate,
 }
 
@@ -203,10 +204,14 @@ enum DataKey {
     MultiSigProposal(u64),
     MultiSigProposalCount,
     RevisionHistory(u64), // Vec<MilestoneRevision> keyed by job_id
+    MilestoneSubmittedAt(u64, u32),
+    InactivityAutoApproveAt(u64, u32),
 }
 
 /// Default proposal expiry: 7 days in seconds.
 const DEFAULT_PROPOSAL_EXPIRY_SECS: u64 = 7 * 24 * 3600;
+const INACTIVITY_THRESHOLD_SECS: u64 = 7 * 24 * 3600;
+const INACTIVITY_GRACE_SECS: u64 = 3 * 24 * 3600;
 
 fn get_job_key(job_id: u64) -> DataKey {
     DataKey::Job(job_id)
@@ -702,6 +707,26 @@ impl EscrowContract {
                     }
                     job.status = JobStatus::Cancelled;
                 }
+                DisputeResolution::RefundSplit(pct_client) => {
+                    let pct = if pct_client > 100 { 100 } else { pct_client } as i128;
+                    let client_amount = (remaining * pct) / 100;
+                    let freelancer_amount = remaining - client_amount;
+                    if client_amount > 0 {
+                        token_client.transfer(
+                            &env.current_contract_address(),
+                            &job.client,
+                            &client_amount,
+                        );
+                    }
+                    if freelancer_amount > 0 {
+                        token_client.transfer(
+                            &env.current_contract_address(),
+                            &job.freelancer,
+                            &freelancer_amount,
+                        );
+                    }
+                    job.status = JobStatus::Cancelled;
+                }
                 DisputeResolution::Escalate => {
                     // No funds transferred; job remains in its current disputed state
                     // until a higher-level resolution process completes.
@@ -711,7 +736,9 @@ impl EscrowContract {
             // All milestones were already paid out — only the job status needs updating.
             // Use the same resolution mapping for consistency with the funds-present path.
             match resolution {
-                DisputeResolution::ClientWins | DisputeResolution::RefundBoth => {
+                DisputeResolution::ClientWins
+                | DisputeResolution::RefundBoth
+                | DisputeResolution::RefundSplit(_) => {
                     job.status = JobStatus::Cancelled;
                 }
                 DisputeResolution::FreelancerWins => {
@@ -788,6 +815,21 @@ impl EscrowContract {
         job.status = JobStatus::InProgress;
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
+
+        let submitted_key = DataKey::MilestoneSubmittedAt(job_id, milestone_id);
+        env.storage()
+            .persistent()
+            .set(&submitted_key, &env.ledger().timestamp());
+        env.storage().persistent().extend_ttl(
+            &submitted_key,
+            MIN_TTL_THRESHOLD,
+            MIN_TTL_EXTEND_TO,
+        );
+
+        let auto_key = DataKey::InactivityAutoApproveAt(job_id, milestone_id);
+        if env.storage().persistent().has(&auto_key) {
+            env.storage().persistent().remove(&auto_key);
+        }
 
         Ok(())
     }
@@ -876,6 +918,15 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
+        let submitted_key = DataKey::MilestoneSubmittedAt(job_id, milestone_id);
+        if env.storage().persistent().has(&submitted_key) {
+            env.storage().persistent().remove(&submitted_key);
+        }
+        let auto_key = DataKey::InactivityAutoApproveAt(job_id, milestone_id);
+        if env.storage().persistent().has(&auto_key) {
+            env.storage().persistent().remove(&auto_key);
+        }
+
         // Emit milestone approved event
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("milestone")),
@@ -951,6 +1002,15 @@ impl EscrowContract {
                 deadline: milestone.deadline,
             };
             milestones.set(index, updated);
+
+            let submitted_key = DataKey::MilestoneSubmittedAt(job_id, index);
+            if env.storage().persistent().has(&submitted_key) {
+                env.storage().persistent().remove(&submitted_key);
+            }
+            let auto_key = DataKey::InactivityAutoApproveAt(job_id, index);
+            if env.storage().persistent().has(&auto_key) {
+                env.storage().persistent().remove(&auto_key);
+            }
         }
 
         // Transfer all payments in a single transaction
@@ -1012,6 +1072,188 @@ impl EscrowContract {
         }
 
         Ok(total_released)
+    }
+
+    /// After a milestone is submitted, allow either party to trigger an inactivity-based
+    /// auto-approval flow when the client is unresponsive for a threshold duration.
+    pub fn trigger_inactivity_extension(
+        env: Env,
+        job_id: u64,
+        milestone_id: u32,
+        caller: Address,
+    ) -> Result<u64, EscrowError> {
+        caller.require_auth();
+        require_not_paused(&env)?;
+
+        let job: Job = env
+            .storage()
+            .persistent()
+            .get(&get_job_key(job_id))
+            .ok_or(EscrowError::JobNotFound)?;
+        bump_job_ttl(&env, job_id);
+
+        if caller != job.client && caller != job.freelancer {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        let milestone = job
+            .milestones
+            .get(milestone_id)
+            .ok_or(EscrowError::MilestoneNotFound)?;
+        if milestone.status != MilestoneStatus::Submitted {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let submitted_key = DataKey::MilestoneSubmittedAt(job_id, milestone_id);
+        let submitted_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&submitted_key)
+            .ok_or(EscrowError::InvalidStatus)?;
+
+        let now = env.ledger().timestamp();
+        if now < submitted_at.saturating_add(INACTIVITY_THRESHOLD_SECS) {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let auto_approve_at = now.saturating_add(INACTIVITY_GRACE_SECS);
+        let auto_key = DataKey::InactivityAutoApproveAt(job_id, milestone_id);
+        env.storage()
+            .persistent()
+            .set(&auto_key, &auto_approve_at);
+        env.storage().persistent().extend_ttl(
+            &auto_key,
+            MIN_TTL_THRESHOLD,
+            MIN_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (symbol_short!("escrow"), Symbol::new(&env, "inact_trig")),
+            (job_id, milestone_id, caller, auto_approve_at),
+        );
+
+        Ok(auto_approve_at)
+    }
+
+    /// Finalize an inactivity-triggered auto-approval after the grace period.
+    /// Pays out the freelancer for the milestone amount and updates job status as needed.
+    pub fn finalize_inactivity_approval(
+        env: Env,
+        job_id: u64,
+        milestone_id: u32,
+        caller: Address,
+    ) -> Result<(), EscrowError> {
+        caller.require_auth();
+        require_not_paused(&env)?;
+
+        let mut job: Job = env
+            .storage()
+            .persistent()
+            .get(&get_job_key(job_id))
+            .ok_or(EscrowError::JobNotFound)?;
+        bump_job_ttl(&env, job_id);
+
+        if caller != job.client && caller != job.freelancer {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        if job.status == JobStatus::Disputed {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let mut milestones = job.milestones.clone();
+        let milestone = milestones
+            .get(milestone_id)
+            .ok_or(EscrowError::MilestoneNotFound)?;
+        if milestone.status != MilestoneStatus::Submitted {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let submitted_key = DataKey::MilestoneSubmittedAt(job_id, milestone_id);
+        let submitted_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&submitted_key)
+            .ok_or(EscrowError::InvalidStatus)?;
+
+        let now = env.ledger().timestamp();
+        if now < submitted_at.saturating_add(INACTIVITY_THRESHOLD_SECS) {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        let auto_key = DataKey::InactivityAutoApproveAt(job_id, milestone_id);
+        let auto_approve_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&auto_key)
+            .ok_or(EscrowError::InvalidStatus)?;
+        if now < auto_approve_at {
+            return Err(EscrowError::InvalidStatus);
+        }
+
+        // Release payment for this milestone (same logic as client approval).
+        let token_client = token::Client::new(&env, &job.token);
+
+        let fee_bps: u32 = env.storage().instance().get(&symbol_short!("FEE")).unwrap_or(0);
+        let treasury: Address = env
+            .storage()
+            .instance()
+            .get(&symbol_short!("TRE"))
+            .unwrap_or(env.current_contract_address());
+
+        let fee_amount = (milestone.amount * fee_bps as i128) / 10_000;
+        let freelancer_amount = milestone.amount - fee_amount;
+
+        if fee_amount > 0 {
+            token_client.transfer(&env.current_contract_address(), &treasury, &fee_amount);
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("fee")),
+                (job_id, milestone_id, fee_amount, treasury.clone()),
+            );
+        }
+
+        token_client.transfer(
+            &env.current_contract_address(),
+            &job.freelancer,
+            &freelancer_amount,
+        );
+
+        let updated = Milestone {
+            id: milestone.id,
+            description: milestone.description.clone(),
+            amount: milestone.amount,
+            status: MilestoneStatus::Approved,
+            deadline: milestone.deadline,
+        };
+        milestones.set(milestone_id, updated);
+        job.milestones = milestones.clone();
+
+        let all_approved = milestones
+            .iter()
+            .all(|m| m.status == MilestoneStatus::Approved);
+        if all_approved {
+            job.status = JobStatus::Completed;
+        }
+
+        env.storage().persistent().set(&get_job_key(job_id), &job);
+        bump_job_ttl(&env, job_id);
+
+        env.storage().persistent().remove(&submitted_key);
+        env.storage().persistent().remove(&auto_key);
+
+        env.events().publish(
+            (symbol_short!("escrow"), Symbol::new(&env, "inact_final")),
+            (job_id, milestone_id, caller),
+        );
+
+        if all_approved {
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "pmt_released")),
+                (job_id, job.freelancer, freelancer_amount),
+            );
+        }
+
+        Ok(())
     }
 
     /// Client releases a partial payment for a submitted milestone.
