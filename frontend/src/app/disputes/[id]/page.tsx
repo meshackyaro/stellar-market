@@ -8,6 +8,7 @@ import axios, { AxiosError } from "axios";
 import { useWallet } from "@/context/WalletContext";
 import { useAuth } from "@/context/AuthContext";
 import { Dispute, Vote } from "@/types";
+import DisputeVoteProgress from "@/components/DisputeVoteProgress";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
@@ -252,25 +253,14 @@ export default function DisputeDetailPage() {
 
         {/* Sidebar */}
         <div className="space-y-6">
+          {/* Real-time Vote Progress Component */}
+          <DisputeVoteProgress disputeId={id as string} showVoterDetails={true} />
+          
           <div className="card border-theme-border border-2">
             <h3 className="font-semibold text-theme-heading mb-4 flex items-center justify-center gap-2 text-lg">
               <ShieldCheck className="text-stellar-blue" />
-              Arbitration Status
+              Cast Your Vote
             </h3>
-            
-            <div className="mb-6">
-                <div className="flex justify-between text-sm mb-2">
-                    <span className="font-medium text-indigo-400">Client ({dispute.votesForClient})</span>
-                    <span className="font-medium text-orange-400">Freelancer ({dispute.votesForFreelancer})</span>
-                </div>
-                <div className="w-full flex h-4 rounded-full overflow-hidden bg-theme-bg-secondary border border-theme-border/50">
-                    <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${clientWidth}%` }} />
-                    <div className="h-full bg-orange-500 transition-all duration-500" style={{ width: `${freelancerWidth}%` }} />
-                </div>
-                <div className="text-center mt-3 text-sm text-theme-text">
-                    <span className="font-medium text-theme-heading">{totalVotes}</span> / {dispute.minVotes} minimum votes reached
-                </div>
-            </div>
 
             {canResolve && !isParticipant && (
                 <button 
