@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
+import EmailVerificationBanner from "@/components/EmailVerificationBanner";
 import Footer from "@/components/Footer";
 import Providers from "./providers";
 
@@ -66,7 +67,7 @@ export default function RootLayout({
             __html: `
               (function() {
                 try {
-                  var savedTheme = localStorage.getItem('theme');
+                  var savedTheme = localStorage.getItem('stellar-market-theme');
                   var supportDarkMode = window.matchMedia('(prefers-color-scheme: dark)').matches;
                   if (!savedTheme && supportDarkMode) savedTheme = 'dark';
                   if (!savedTheme) savedTheme = 'light';
@@ -80,6 +81,7 @@ export default function RootLayout({
       <body className={inter.className}>
         <Providers>
           <Navbar />
+          <EmailVerificationBanner />
           <main className="min-h-screen">{children}</main>
           <Footer />
         </Providers>

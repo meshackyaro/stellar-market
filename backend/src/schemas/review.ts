@@ -2,8 +2,8 @@ import { z } from "zod";
 import { paginationSchema, reviewRatingSchema } from "./common";
 
 export const createReviewSchema = z.object({
-  jobId: z.string().uuid("Invalid job ID"),
-  revieweeId: z.string().uuid("Invalid reviewee ID"),
+  jobId: z.string().min(1, "Job ID is required"),
+  revieweeId: z.string().min(1, "Reviewee ID is required"),
   rating: reviewRatingSchema,
   comment: z
     .string()
@@ -21,12 +21,16 @@ export const updateReviewSchema = z.object({
 });
 
 export const getReviewsQuerySchema = paginationSchema.extend({
-  jobId: z.string().uuid().optional(),
-  reviewerId: z.string().uuid().optional(),
-  revieweeId: z.string().uuid().optional(),
+  jobId: z.string().min(1).optional(),
+  reviewerId: z.string().min(1).optional(),
+  revieweeId: z.string().min(1).optional(),
   rating: z.coerce.number().int().min(1).max(5).optional(),
 });
 
 export const getReviewByIdParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1, "ID is required"),
+});
+
+export const getReviewsByUserParamSchema = z.object({
+  userId: z.string().min(1, "User ID is required"),
 });

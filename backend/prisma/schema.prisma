@@ -19,6 +19,19 @@ enum JobStatus {
   COMPLETED
   CANCELLED
   DISPUTED
+  EXPIRED
+}
+
+enum ReportTargetType {
+  JOB
+  USER
+  MESSAGE
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  DISMISSED
 }
 
 enum MilestoneStatus {
@@ -27,6 +40,7 @@ enum MilestoneStatus {
   SUBMITTED
   APPROVED
   REJECTED
+  PARTIALLY_PAID
 }
 
 enum ApplicationStatus {
@@ -53,20 +67,27 @@ enum TransactionType {
 enum NotificationType {
   JOB_APPLIED
   APPLICATION_ACCEPTED
+  APPLICATION_REJECTED
   MILESTONE_SUBMITTED
   MILESTONE_APPROVED
+  PAYMENT_RELEASED
   DISPUTE_RAISED
   DISPUTE_RESOLVED
   NEW_MESSAGE
+  BADGE_AWARDED
+}
+
+enum BadgeTier {
+  BRONZE
+  SILVER
+  GOLD
+  PLATINUM
 }
 
 enum DisputeStatus {
   OPEN
-  REVIEWING
-  VOTING
-  RESOLVED_CLIENT
-  RESOLVED_FREELANCER
-  OVERRIDDEN_BY_ADMIN
+  IN_PROGRESS
+  RESOLVED
 }
 
 model User {
@@ -95,23 +116,42 @@ model User {
   availability           Boolean   @default(true)
   averageRating          Float     @default(0)
   reviewCount            Int       @default(0)
+  completedOnboarding    Boolean   @default(false)
 
-  clientJobs        Job[]          @relation("ClientJobs")
-  freelancerJobs    Job[]          @relation("FreelancerJobs")
-  applications      Application[]
-  sentMessages      Message[]      @relation("SentMessages")
-  receivedMessages  Message[]      @relation("ReceivedMessages")
-  reviewsGiven      Review[]       @relation("ReviewsGiven")
-  reviewsReceived   Review[]       @relation("ReviewsReceived")
-  skills            String[]
-  transactionsFrom  Transaction[]  @relation("TransactionsFrom")
-  transactionsTo    Transaction[]  @relation("TransactionsTo")
-  attachments       Attachment[]
-  notifications     Notification[]
-  auditLogs         AuditLog[]
-  initiatedDisputes Dispute[]      @relation("DisputeInitiated")
-  respondedDisputes Dispute[]      @relation("DisputeResponded")
-  votesCast         Vote[]         @relation("VotesCast")
+  clientJobs         Job[]          @relation("ClientJobs")
+  freelancerJobs     Job[]          @relation("FreelancerJobs")
+  services           Service[]      @relation("FreelancerServices")
+  applications       Application[]
+  sentMessages       Message[]      @relation("SentMessages")
+  receivedMessages   Message[]      @relation("ReceivedMessages")
+  reviewsGiven       Review[]       @relation("ReviewsGiven")
+  reviewsReceived    Review[]       @relation("ReviewsReceived")
+  skills             String[]
+  transactionsFrom   Transaction[]  @relation("TransactionsFrom")
+  transactionsTo     Transaction[]  @relation("TransactionsTo")
+  attachments        Attachment[]
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  initiatedDisputes  Dispute[]      @relation("DisputeInitiated")
+  clientDisputes     Dispute[]      @relation("DisputeClient")
+  freelancerDisputes Dispute[]      @relation("DisputeFreelancer")
+  votesCast          DisputeVote[]  @relation("VotesCast")
+  savedJobs          SavedJob[]     @relation("SavedJobs")
+  reportsGiven       Report[]       @relation("ReportsGiven")
+  badges             Badge[]
+  notificationPreference NotificationPreference?
+  webhooks           Webhook[]
+}
+
+model NotificationPreference {
+  userId                 String   @id
+  emailEnabled           Boolean  @default(true)
+  emailDisputeOpened     Boolean  @default(true)
+  emailMilestoneApproved Boolean  @default(true)
+  emailPaymentReleased   Boolean  @default(true)
+  emailApplicationAccepted Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Job {
@@ -131,6 +171,7 @@ model Job {
   flagReason    String?
   flaggedAt     DateTime?
   flaggedBy     String?
+  deletedAt     DateTime?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -143,6 +184,9 @@ model Job {
   transactions Transaction[]
   attachments  Attachment[]
   dispute      Dispute?
+  savedBy      SavedJob[]    @relation("SavedByFreelancers")
+
+  @@index([deletedAt])
 }
 
 model Milestone {
@@ -160,6 +204,7 @@ model Milestone {
 
   job          Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
   transactions Transaction[]
+  attachments  Attachment[]
 }
 
 model Application {
@@ -234,24 +279,27 @@ model Transaction {
 }
 
 model Attachment {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   uploaderId   String
   jobId        String?
   disputeId    String?
+  milestoneId  String?
   filename     String
   originalName String
   mimeType     String
   size         Int
   url          String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
-  uploader User     @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
-  job      Job?     @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  dispute  Dispute? @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  uploader  User       @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  job       Job?       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  dispute   Dispute?   @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  milestone Milestone? @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
 
   @@index([uploaderId])
   @@index([jobId])
   @@index([disputeId])
+  @@index([milestoneId])
   @@index([createdAt])
 }
 
@@ -267,8 +315,7 @@ model Notification {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
-  @@index([createdAt])
+  @@index([userId, createdAt(sort: Desc)])
 }
 
 model AuditLog {
@@ -283,35 +330,34 @@ model AuditLog {
 }
 
 model Dispute {
-  id                 String        @id @default(cuid())
-  jobId              String        @unique
-  contractDisputeId  String?       @unique
-  initiatorId        String
-  respondentId       String
-  reason             String
-  status             DisputeStatus @default(OPEN)
-  votesForClient     Int           @default(0)
-  votesForFreelancer Int           @default(0)
-  minVotes           Int           @default(3)
-  escalated          Boolean       @default(false)
-  outcome            String?
-  resolvedAt         DateTime?
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  id               String        @id @default(cuid())
+  jobId            String        @unique
+  onChainDisputeId String?       @unique
+  clientId         String
+  freelancerId     String
+  initiatorId      String
+  reason           String
+  status           DisputeStatus @default(OPEN)
+  outcome          String?
+  resolvedAt       DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
-  job         Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  initiator   User         @relation("DisputeInitiated", fields: [initiatorId], references: [id])
-  respondent  User         @relation("DisputeResponded", fields: [respondentId], references: [id])
-  votes       Vote[]
+  job         Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  client      User          @relation("DisputeClient", fields: [clientId], references: [id])
+  freelancer  User          @relation("DisputeFreelancer", fields: [freelancerId], references: [id])
+  initiator   User          @relation("DisputeInitiated", fields: [initiatorId], references: [id])
+  votes       DisputeVote[]
   attachments Attachment[]
 
   @@index([jobId])
+  @@index([clientId])
+  @@index([freelancerId])
   @@index([initiatorId])
-  @@index([respondentId])
   @@index([status])
 }
 
-model Vote {
+model DisputeVote {
   id        String   @id @default(cuid())
   disputeId String
   voterId   String
@@ -325,4 +371,113 @@ model Vote {
   @@unique([disputeId, voterId])
   @@index([disputeId])
   @@index([voterId])
+}
+
+model SavedJob {
+  id           String   @id @default(cuid())
+  freelancerId String
+  jobId        String
+  createdAt    DateTime @default(now())
+
+  freelancer User @relation("SavedJobs", fields: [freelancerId], references: [id], onDelete: Cascade)
+  job        Job  @relation("SavedByFreelancers", fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([freelancerId, jobId])
+  @@index([freelancerId])
+  @@index([jobId])
+}
+
+model Service {
+  id           String   @id @default(cuid())
+  freelancerId String
+  title        String
+  description  String
+  category     String
+  price        Float
+  deliveryDays Int
+  skills       String[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  freelancer User @relation("FreelancerServices", fields: [freelancerId], references: [id], onDelete: Cascade)
+
+  @@index([freelancerId])
+  @@index([category])
+  @@index([createdAt])
+}
+
+model SystemState {
+  key   String @id
+  value String
+}
+
+model Report {
+  id         String           @id @default(cuid())
+  reporterId String
+  targetType ReportTargetType
+  targetId   String
+  reason     String
+  status     ReportStatus     @default(PENDING)
+  createdAt  DateTime         @default(now())
+
+  reporter User @relation("ReportsGiven", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([reporterId])
+  @@index([targetType])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SyncState {
+  id                String   @id @default("default")
+  lastIndexedLedger Int      @default(0)
+  updatedAt         DateTime @updatedAt
+}
+
+model Badge {
+  id            String    @id @default(cuid())
+  userId        String
+  tier          BadgeTier
+  awardedLedger Int
+  createdAt     DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, tier])
+  @@index([userId])
+}
+
+model Webhook {
+  id        String   @id @default(cuid())
+  userId    String
+  url       String
+  event     String
+  secret    String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@index([event])
+}
+
+model WebhookDelivery {
+  id           String    @id @default(cuid())
+  webhookId    String
+  event        String
+  payload      Json
+  status       String    @default("pending")
+  attempts     Int       @default(0)
+  lastAttempt  DateTime?
+  nextRetry    DateTime?
+  responseCode Int?
+  createdAt    DateTime  @default(now())
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([status])
+  @@index([nextRetry])
 }

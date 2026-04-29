@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { AlertCircle, ArrowRight, Loader2, ShieldCheck } from "lucide-react";
+import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
 import axios from "axios";
+import EmptyState from "@/components/EmptyState";
 import { Dispute } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -51,10 +52,13 @@ export default function DisputesPage() {
       </div>
 
       {disputes.length === 0 ? (
-        <div className="card p-12 flex flex-col items-center justify-center text-center">
-          <AlertCircle className="text-theme-text mb-4" size={48} />
-          <h2 className="text-xl font-semibold text-theme-heading mb-2">No Active Disputes</h2>
-          <p className="text-theme-text">The marketplace is peaceful right now. Check back later to participate in arbitration.</p>
+        <div className="card">
+          <EmptyState
+            icon={ShieldCheck}
+            title="You have no active disputes."
+            description="The marketplace is peaceful right now. Check back later to participate in community arbitration and earn rewards."
+            action={{ label: "Back to Dashboard", href: "/dashboard" }}
+          />
         </div>
       ) : (
         <div className="grid gap-4">

@@ -43,14 +43,6 @@
                     "storage": [
                       {
                         "key": {
-                          "symbol": "ADM"
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                        }
-                      },
-                      {
-                        "key": {
                           "symbol": "FEE"
                         },
                         "val": {
@@ -69,12 +61,64 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "AllowedTokens"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": []
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MultiSigSigners"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MultiSigThreshold"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Paused"
                             }
                           ]
                         },
                         "val": {
                           "bool": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "ProposalExpiry"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 604800
                         }
                       }
                     ]
@@ -132,13 +176,23 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  ]
+                },
+                {
+                  "u32": 1
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
                   "u32": 1001
+                },
+                {
+                  "u64": 604800
                 }
               ]
             }
@@ -164,7 +218,7 @@
             ],
             "data": {
               "error": {
-                "contract": 3
+                "contract": 35
               }
             }
           }
@@ -185,7 +239,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 35
                 }
               }
             ],
@@ -210,7 +264,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 35
                 }
               }
             ],
@@ -225,13 +279,23 @@
                 {
                   "vec": [
                     {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      "vec": [
+                        {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      ]
+                    },
+                    {
+                      "u32": 1
                     },
                     {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                     },
                     {
                       "u32": 1001
+                    },
+                    {
+                      "u64": 604800
                     }
                   ]
                 }
@@ -263,13 +327,23 @@
             "data": {
               "vec": [
                 {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                  "vec": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    }
+                  ]
+                },
+                {
+                  "u32": 1
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
                   "u32": 0
+                },
+                {
+                  "u64": 604800
                 }
               ]
             }
@@ -314,16 +388,70 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "set_fee_bps"
+                "symbol": "propose_admin_action"
               }
             ],
             "data": {
-              "u32": 1001
+              "vec": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "SetFeeBps"
+                    },
+                    {
+                      "u32": 1001
+                    }
+                  ]
+                }
+              ]
             }
           }
         }
       },
       "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "msig"
+              },
+              {
+                "symbol": "proposed"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "u64": 1
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                },
+                {
+                  "vec": [
+                    {
+                      "symbol": "SetFeeBps"
+                    },
+                    {
+                      "u32": 1001
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": true
     },
     {
       "event": {
@@ -337,12 +465,12 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "set_fee_bps"
+                "symbol": "propose_admin_action"
               }
             ],
             "data": {
               "error": {
-                "contract": 3
+                "contract": 35
               }
             }
           }
@@ -363,7 +491,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 35
                 }
               }
             ],
@@ -388,7 +516,7 @@
               },
               {
                 "error": {
-                  "contract": 3
+                  "contract": 35
                 }
               }
             ],
@@ -398,12 +526,22 @@
                   "string": "contract try_call failed"
                 },
                 {
-                  "symbol": "set_fee_bps"
+                  "symbol": "propose_admin_action"
                 },
                 {
                   "vec": [
                     {
-                      "u32": 1001
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                    },
+                    {
+                      "vec": [
+                        {
+                          "symbol": "SetFeeBps"
+                        },
+                        {
+                          "u32": 1001
+                        }
+                      ]
                     }
                   ]
                 }

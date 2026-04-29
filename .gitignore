@@ -35,3 +35,6 @@ coverage/
 # Misc
 *.swp
 *.swo
+checks.md
+issue.md
+pr.md

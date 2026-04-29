@@ -14,14 +14,18 @@ jest.mock("@prisma/client", () => {
       count: jest.fn(),
     },
     user: {
-      findUnique: jest.fn(),
+      findUnique: jest.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000001",
+        role: "FREELANCER",
+        emailVerified: true,
+      }),
     },
     notification: {
       create: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
       updateMany: jest.fn(),
-    }
+    },
   };
   return {
     PrismaClient: jest.fn(() => mockPrisma) as any,
@@ -38,7 +42,7 @@ jest.mock("@prisma/client", () => {
       MILESTONE_APPROVED: "MILESTONE_APPROVED",
       DISPUTE_RAISED: "DISPUTE_RAISED",
       DISPUTE_RESOLVED: "DISPUTE_RESOLVED",
-    } as any
+    } as any,
   };
 });
 
@@ -48,13 +52,14 @@ import { UserRole, NotificationType } from "@prisma/client";
 
 jest.mock("../../services/notification.service", () => ({
   NotificationService: {
-    sendNotification: jest.fn().mockResolvedValue({ id: "mock-notif-id" })
-  }
+    sendNotification: jest.fn().mockResolvedValue({ id: "mock-notif-id" }),
+  },
 }));
 
 import { PrismaClient } from "@prisma/client";
 const prismaMock = new PrismaClient() as any;
 const messageMock = prismaMock.message;
+const userMock = prismaMock.user;
 
 // ─── App setup ────────────────────────────────────────────────────────────────
 const app = express();
@@ -72,6 +77,15 @@ function authHeader(userId = USER_TEST_ID) {
 }
 
 afterEach(() => jest.clearAllMocks());
+
+beforeEach(() => {
+  // Ensure authenticate finds a user record by default
+  userMock.findUnique.mockResolvedValue({
+    id: USER_TEST_ID,
+    role: "FREELANCER",
+    emailVerified: true,
+  });
+});
 
 // ─── POST /api/messages ───────────────────────────────────────────────────────
 describe("POST /api/messages", () => {
@@ -141,8 +155,11 @@ describe("GET /api/messages/unread-count", () => {
     expect(res.body).toEqual({ count: 5 });
     expect(messageMock.count).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ receiverId: USER_TEST_ID, read: false }),
-      })
+        where: expect.objectContaining({
+          receiverId: USER_TEST_ID,
+          read: false,
+        }),
+      }),
     );
   });
 
@@ -218,7 +235,7 @@ describe("GET /api/messages/:userId", () => {
           read: false,
         }),
         data: { read: true },
-      })
+      }),
     );
   });
 

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
+import { logger } from "../lib/logger";
 
 export interface ApiError extends Error {
   statusCode?: number;
@@ -38,6 +39,12 @@ export const errorHandler = (
     };
   }
 
+  // Handle Soroban simulation errors
+  if (err.name === 'ContractSimulationError') {
+    statusCode = 422;
+    message = err.message;
+  }
+
   // Handle JWT errors
   if (err.name === 'JsonWebTokenError') {
     statusCode = 401;
@@ -62,17 +69,21 @@ export const errorHandler = (
   }
 
   // Log error for debugging
-  console.error(`[${new Date().toISOString()}] Error:`, {
-    message: err.message,
-    stack: err.stack,
-    url: req.url,
-    method: req.method,
-    ip: req.ip,
-  });
+  logger.error(
+    {
+      err,
+      requestId: (req as any).requestId,
+      url: req.url,
+      method: req.method,
+      ip: req.ip,
+    },
+    "Request error",
+  );
 
   // Send consistent error response
   res.status(statusCode).json({
     error: message,
+    requestId: req.requestId,
     ...(details && { details }),
   });
 };

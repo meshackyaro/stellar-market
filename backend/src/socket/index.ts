@@ -3,6 +3,7 @@ import { Server as SocketServer, Socket } from "socket.io";
 import jwt from "jsonwebtoken";
 import { config } from "../config";
 import { registerMessageHandlers } from "./messageHandlers";
+import { logger } from "../lib/logger";
 
 export interface AuthenticatedSocket extends Socket {
   data: {
@@ -41,15 +42,19 @@ export function initSocket(httpServer: HttpServer): SocketServer {
   io.on("connection", (socket) => {
     const authedSocket = socket as AuthenticatedSocket;
     const userId = authedSocket.data.userId;
+    const joinedRooms = new Set<string>();
 
-    // Join personal room so we can target this user from anywhere
     socket.join(`user:${userId}`);
-    console.log(`Socket connected: user=${userId} socket=${socket.id}`);
+    joinedRooms.add(`user:${userId}`);
+    logger.info({ userId, socketId: socket.id }, "Socket connected");
 
     registerMessageHandlers(io, authedSocket);
 
     socket.on("disconnect", () => {
-      console.log(`Socket disconnected: user=${userId} socket=${socket.id}`);
+      for (const room of joinedRooms) {
+        socket.leave(room);
+      }
+      logger.info({ userId, socketId: socket.id }, "Socket disconnected");
     });
   });
 

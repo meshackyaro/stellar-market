@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { config } from "../config";
 import { PrismaClient, UserRole } from "@prisma/client";
+import { logger } from "../lib/logger";
 
 const prisma = new PrismaClient();
 
@@ -10,11 +11,11 @@ export interface AuthRequest extends Request {
   userRole?: UserRole;
 }
 
-export const authenticate = (
+export const authenticate = async (
   req: AuthRequest,
   res: Response,
-  next: NextFunction
-): void => {
+  next: NextFunction,
+): Promise<void> => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -25,7 +26,10 @@ export const authenticate = (
   const token = authHeader.split(" ")[1];
 
   try {
-    const decoded = jwt.verify(token, config.jwtSecret) as { userId: string; purpose?: string };
+    const decoded = jwt.verify(token, config.jwtSecret) as {
+      userId: string;
+      purpose?: string;
+    };
 
     if (decoded.purpose === "2fa_pending") {
       res.status(401).json({ error: "2FA verification required." });
@@ -33,6 +37,40 @@ export const authenticate = (
     }
 
     req.userId = decoded.userId;
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.userId },
+      select: { role: true, emailVerified: true },
+    });
+
+    if (!user) {
+      res.status(401).json({ error: "User not found." });
+      return;
+    }
+
+    // Check if email verification is required for this route
+    const exemptRoutes = [
+      "/auth/send-verification",
+      "/auth/verify-email",
+      "/auth/login",
+      "/auth/2fa/validate",
+      "/auth/forgot-password",
+      "/auth/reset-password",
+    ];
+
+    const isExempt = exemptRoutes.some((route) => req.path.includes(route));
+
+    if (!isExempt && !user.emailVerified) {
+      res.status(403).json({
+        error: "Email not verified.",
+        message:
+          "Please check your inbox and click the verification link before continuing.",
+        code: "EMAIL_NOT_VERIFIED",
+      });
+      return;
+    }
+
+    req.userRole = user.role;
     next();
   } catch {
     res.status(401).json({ error: "Invalid or expired token." });
@@ -42,7 +80,7 @@ export const authenticate = (
 export const requireAdmin = async (
   req: AuthRequest,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ): Promise<void> => {
   // First authenticate the user
   const authHeader = req.headers.authorization;
@@ -70,7 +108,9 @@ export const requireAdmin = async (
     }
 
     if (user.role !== UserRole.ADMIN) {
-      res.status(403).json({ error: "Access denied. Admin privileges required." });
+      res
+        .status(403)
+        .json({ error: "Access denied. Admin privileges required." });
       return;
     }
 
@@ -84,7 +124,7 @@ export const requireAdmin = async (
 export const checkSuspension = async (
   req: AuthRequest,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ): Promise<void> => {
   if (!req.userId) {
     next();
@@ -107,7 +147,7 @@ export const checkSuspension = async (
 
     next();
   } catch (error) {
-    console.error("Error checking suspension status:", error);
+    logger.error({ err: error }, "Error checking suspension status");
     next();
   }
 };

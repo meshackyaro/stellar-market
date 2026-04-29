@@ -1,0 +1,43 @@
+export function renderEmailLayout(params: {
+  title: string;
+  preheader?: string;
+  bodyHtml: string;
+  actionUrl?: string;
+  actionLabel?: string;
+}): string {
+  const { title, preheader, bodyHtml, actionUrl, actionLabel } = params;
+
+  const button =
+    actionUrl && actionLabel
+      ? `
+        <p style="margin: 24px 0;">
+          <a href="${actionUrl}"
+             style="display:inline-block;padding:12px 18px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;">
+            ${actionLabel}
+          </a>
+        </p>
+      `
+      : "";
+
+  return `
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+    ${preheader || ""}
+  </div>
+  <div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background:#f6f7fb; padding:24px;">
+    <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+      <div style="padding:20px 24px;border-bottom:1px solid #e5e7eb;">
+        <div style="font-size:14px;color:#6b7280;">StellarMarket</div>
+        <div style="font-size:20px;font-weight:700;color:#111827;margin-top:6px;">${title}</div>
+      </div>
+      <div style="padding:20px 24px;color:#111827;line-height:1.55;">
+        ${bodyHtml}
+        ${button}
+        <p style="margin-top:28px;color:#6b7280;font-size:12px;">
+          If you didn’t expect this email, you can ignore it.
+        </p>
+      </div>
+    </div>
+  </div>
+  `;
+}
+

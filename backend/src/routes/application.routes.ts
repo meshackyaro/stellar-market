@@ -4,6 +4,7 @@ import { authenticate, AuthRequest } from "../middleware/auth";
 import { validate } from "../middleware/validation";
 import { asyncHandler } from "../middleware/error";
 import { NotificationService } from "../services/notification.service";
+import { RecommendationService } from "../services/recommendation.service";
 import {
   createApplicationSchema,
   updateApplicationSchema,
@@ -44,7 +45,7 @@ router.post(
         .json({ error: "Job is not accepting applications." });
     }
     if (job.clientId === req.userId) {
-      return res.status(400).json({ error: "Cannot apply to your own job." });
+      return res.status(400).json({ error: "You cannot apply to your own job." });
     }
 
     const existing = await prisma.application.findUnique({
@@ -77,6 +78,9 @@ router.post(
       message: `${application.freelancer.username} applied to your job: ${job.title}`,
       metadata: { jobId, applicationId: application.id },
     });
+
+    // Invalidate recommendation cache for the freelancer
+    await RecommendationService.invalidateUserRecommendations(req.userId!);
 
     res.status(201).json(application);
   }),
@@ -213,6 +217,41 @@ router.put(
         },
       });
 
+      
+
+      // Reject all other pending applications for this job
+      const rejectedApplications = await prisma.application.findMany({
+        where: {
+          jobId: application.jobId,
+          id: { not: id },
+          status: "PENDING",
+        },
+        select: { id: true, freelancerId: true },
+      });
+
+      if (rejectedApplications.length > 0) {
+        // Update all other pending applications to REJECTED
+        await prisma.application.updateMany({
+          where: {
+            jobId: application.jobId,
+            id: { not: id },
+            status: "PENDING",
+          },
+          data: { status: "REJECTED" },
+        });
+
+        // Notify each rejected freelancer
+        for (const rejectedApp of rejectedApplications) {
+          await NotificationService.sendNotification({
+            userId: rejectedApp.freelancerId,
+            type: NotificationType.APPLICATION_REJECTED,
+            title: "Application Rejected",
+            message: `Your application for "${application.job.title}" has been rejected. Another candidate was selected.`,
+            metadata: { jobId: application.jobId, applicationId: rejectedApp.id },
+          });
+        }
+      }
+
       // Notify the freelancer
       await NotificationService.sendNotification({
         userId: application.freelancerId,
@@ -262,6 +301,32 @@ router.put(
     });
 
     res.json(updated);
+  }),
+);
+
+// Withdraw (delete) a pending application — applicant only
+router.delete(
+  "/applications/:id",
+  authenticate,
+  validate({ params: getApplicationByIdParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = req.params.id as string;
+
+    const application = await prisma.application.findUnique({ where: { id } });
+
+    if (!application) {
+      return res.status(404).json({ error: "Application not found." });
+    }
+    if (application.freelancerId !== req.userId) {
+      return res.status(403).json({ error: "Not authorized." });
+    }
+    if (application.status !== "PENDING") {
+      return res.status(400).json({ error: "Cannot withdraw an accepted or rejected application." });
+    }
+
+    await prisma.application.delete({ where: { id } });
+
+    res.status(204).send();
   }),
 );
 

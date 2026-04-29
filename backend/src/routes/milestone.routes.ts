@@ -1,10 +1,16 @@
 import { Router, Response } from "express";
 import { PrismaClient } from "@prisma/client";
+import fs from "fs";
+import path from "path";
 import { authenticate, AuthRequest } from "../middleware/auth";
 import { validate } from "../middleware/validation";
 import { asyncHandler } from "../middleware/error";
 import { NotificationService } from "../services/notification.service";
 import { NotificationType } from "@prisma/client";
+import { ContractService } from "../services/contract.service";
+import { upload, UPLOAD_DIR, MAX_FILE_SIZE } from "../config/upload";
+import { validateFileMimeType, formatFileSize } from "../utils/fileValidation";
+import { z } from "zod";
 import {
   createMilestoneSchema,
   updateMilestoneSchema,
@@ -19,12 +25,12 @@ const prisma = new PrismaClient();
 
 // Valid status transitions per role
 const freelancerTransitions: Record<string, string[]> = {
-  PENDING: ["IN_PROGRESS", "COMPLETED"],
-  IN_PROGRESS: ["COMPLETED"],
+  PENDING: ["IN_PROGRESS"],
+  IN_PROGRESS: ["SUBMITTED"],
 };
 
 const clientTransitions: Record<string, string[]> = {
-  COMPLETED: ["CANCELLED"],
+  SUBMITTED: ["APPROVED", "REJECTED"],
 };
 
 // List milestones for a job
@@ -264,14 +270,12 @@ router.patch(
     // Determine allowed transitions based on role
     const currentStatus = milestone.status;
     const allowedStatuses = isFreelancer
-      ? freelancerTransitions[currentStatus] || []
-      : clientTransitions[currentStatus] || [];
+      ? (freelancerTransitions[currentStatus] || [])
+      : (clientTransitions[currentStatus] || []);
 
     if (!allowedStatuses.includes(status)) {
       return res.status(403).json({
-        error: isFreelancer
-          ? "Freelancer can only move milestones to IN_PROGRESS or COMPLETED."
-          : "Client can only CANCEL a completed milestone.",
+        error: `Invalid status transition from ${currentStatus} to ${status} for ${isFreelancer ? 'Freelancer' : 'Client'}.`
       });
     }
 
@@ -280,8 +284,18 @@ router.patch(
       data: { status },
     });
 
+    // Emit Socket.IO event for real-time updates
+    const { getIo } = await import("../socket");
+    const io = getIo();
+    io.to(`job:${updated.jobId}`).emit("milestone:status_changed", {
+      milestoneId: updated.id,
+      jobId: updated.jobId,
+      status: updated.status,
+      updatedAt: new Date(),
+    });
+
     // Notify the client when freelancer submits milestone
-    if (isFreelancer && status === "COMPLETED") {
+    if (isFreelancer && status === "SUBMITTED") {
       await NotificationService.sendNotification({
         userId: job.clientId,
         type: NotificationType.MILESTONE_SUBMITTED,
@@ -291,24 +305,248 @@ router.patch(
       });
     }
 
-    // Auto-complete job when all milestones are completed
-    if (status === "COMPLETED") {
-      const allMilestones = await prisma.milestone.findMany({
-        where: { jobId: job.id },
-      });
+    res.json(updated);
+  }),
+);
 
-      const allCompleted = allMilestones.every(
-        (m: any) => m.status === "COMPLETED",
-      );
-      if (allCompleted) {
-        await prisma.job.update({
-          where: { id: job.id },
-          data: { status: "COMPLETED" },
-        });
-      }
+// Submit milestone (returns XDR for freelancer signing)
+router.put(
+  "/milestones/:id/submit",
+  authenticate,
+  validate({ params: getMilestoneByIdParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = req.params.id as string;
+
+    const milestone = await prisma.milestone.findUnique({
+      where: { id },
+      include: { job: { include: { freelancer: true } } },
+    });
+
+    if (!milestone || !milestone.job.contractJobId || milestone.onChainIndex === null) {
+      return res.status(404).json({ error: "On-chain milestone not found." });
     }
 
-    res.json(updated);
+    if (!milestone.job.freelancer || milestone.job.freelancerId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "Only the assigned freelancer can submit milestones." });
+    }
+
+    if (milestone.status !== "IN_PROGRESS") {
+      return res.status(400).json({ error: "Milestone must be in progress to submit." });
+    }
+
+    const xdr = await ContractService.buildSubmitMilestoneTx(
+      milestone.job.freelancer.walletAddress,
+      milestone.job.contractJobId,
+      milestone.onChainIndex,
+    );
+
+    res.json({ xdr });
+  }),
+);
+
+// ─── Deliverable attachments ──────────────────────────────────────────────────
+
+const deliverableParamSchema = z.object({ id: z.string() });
+const deliverableDeleteParamSchema = z.object({
+  id: z.string(),
+  attachmentId: z.string(),
+});
+
+/**
+ * POST /api/milestones/:id/deliverables
+ * Upload a file deliverable for a milestone.
+ * Only the assigned freelancer may upload; milestone must not be APPROVED.
+ */
+router.post(
+  "/:id/deliverables",
+  authenticate,
+  upload.single("file"),
+  validate({ params: deliverableParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded." });
+    }
+
+    const milestoneId = req.params.id as string;
+
+    const milestone = await prisma.milestone.findUnique({
+      where: { id: milestoneId },
+      include: { job: { select: { id: true, clientId: true, freelancerId: true, title: true } } },
+    });
+
+    if (!milestone) {
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ error: "Milestone not found." });
+    }
+
+    const job = (milestone as any).job;
+
+    if (job.freelancerId !== req.userId) {
+      fs.unlinkSync(req.file.path);
+      return res.status(403).json({ error: "Only the assigned freelancer can upload deliverables." });
+    }
+
+    if (milestone.status === "APPROVED") {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: "Cannot add deliverables to an already approved milestone." });
+    }
+
+    // MIME sniffing validation
+    const validation = await validateFileMimeType(req.file.path);
+    if (!validation.valid) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: validation.error || "Invalid file type." });
+    }
+
+    const attachment = await prisma.attachment.create({
+      data: {
+        uploaderId: req.userId!,
+        jobId: job.id,
+        milestoneId,
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        mimeType: validation.detectedType || req.file.mimetype,
+        size: req.file.size,
+        url: `/api/uploads/${req.file.filename}`,
+      },
+      include: {
+        uploader: { select: { id: true, username: true, walletAddress: true } },
+      },
+    });
+
+    // Notify the client that a deliverable was attached
+    await NotificationService.sendNotification({
+      userId: job.clientId,
+      type: NotificationType.MILESTONE_SUBMITTED,
+      title: "Deliverable Uploaded",
+      message: `A file deliverable was attached to milestone "${milestone.title}" on job "${job.title}".`,
+      metadata: { jobId: job.id, milestoneId, attachmentId: attachment.id },
+    });
+
+    res.status(201).json({ ...attachment, sizeFormatted: formatFileSize(attachment.size) });
+  }),
+);
+
+/**
+ * GET /api/milestones/:id/deliverables
+ * List all file deliverables for a milestone.
+ * Accessible by both the client and the freelancer of the job.
+ */
+router.get(
+  "/:id/deliverables",
+  authenticate,
+  validate({ params: deliverableParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const milestoneId = req.params.id as string;
+
+    const milestone = await prisma.milestone.findUnique({
+      where: { id: milestoneId },
+      include: { job: { select: { clientId: true, freelancerId: true } } },
+    });
+
+    if (!milestone) {
+      return res.status(404).json({ error: "Milestone not found." });
+    }
+
+    const job = (milestone as any).job;
+    if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+      return res.status(403).json({ error: "Access denied." });
+    }
+
+    const attachments = await prisma.attachment.findMany({
+      where: { milestoneId },
+      include: {
+        uploader: { select: { id: true, username: true, walletAddress: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    res.json({
+      attachments: attachments.map((a: any) => ({
+        ...a,
+        sizeFormatted: formatFileSize(a.size),
+      })),
+    });
+  }),
+);
+
+/**
+ * DELETE /api/milestones/:id/deliverables/:attachmentId
+ * Delete a deliverable.  Only the uploader may delete, and only while the
+ * milestone is not yet APPROVED.
+ */
+router.delete(
+  "/:id/deliverables/:attachmentId",
+  authenticate,
+  validate({ params: deliverableDeleteParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const milestoneId = req.params.id as string;
+    const attachmentId = req.params.attachmentId as string;
+
+    const attachment = await prisma.attachment.findUnique({
+      where: { id: attachmentId },
+      include: { milestone: { select: { id: true, status: true } } },
+    });
+
+    if (!attachment || attachment.milestoneId !== milestoneId) {
+      return res.status(404).json({ error: "Deliverable not found." });
+    }
+
+    if (attachment.uploaderId !== req.userId) {
+      return res.status(403).json({ error: "Only the uploader can delete this deliverable." });
+    }
+
+    if ((attachment as any).milestone?.status === "APPROVED") {
+      return res.status(400).json({ error: "Cannot delete a deliverable from an approved milestone." });
+    }
+
+    const filePath = path.join(UPLOAD_DIR, attachment.filename);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    await prisma.attachment.delete({ where: { id: attachmentId } });
+
+    res.json({ message: "Deliverable deleted successfully." });
+  }),
+);
+
+// Approve milestone (returns XDR for client signing)
+router.put(
+  "/milestones/:id/approve",
+  authenticate,
+  validate({ params: getMilestoneByIdParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const id = req.params.id as string;
+
+    const milestone = await prisma.milestone.findUnique({
+      where: { id },
+      include: { job: { include: { client: true } } },
+    });
+
+    if (!milestone || !milestone.job.contractJobId || milestone.onChainIndex === null) {
+      return res.status(404).json({ error: "On-chain milestone not found." });
+    }
+
+    if (milestone.job.clientId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "Only the client can approve milestones." });
+    }
+
+    if (milestone.status !== "SUBMITTED") {
+      return res.status(400).json({ error: "Milestone must be submitted to approve." });
+    }
+
+    const xdr = await ContractService.buildApproveMilestoneTx(
+      milestone.job.client.walletAddress,
+      milestone.job.contractJobId,
+      milestone.onChainIndex,
+    );
+
+    res.json({ xdr });
   }),
 );
 

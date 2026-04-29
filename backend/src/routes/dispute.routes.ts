@@ -1,216 +1,249 @@
 import { Router, Request, Response } from "express";
-import { PrismaClient, JobStatus, DisputeStatus } from "@prisma/client";
+import { DisputeStatus, UserRole } from "@prisma/client";
 import { authenticate, AuthRequest } from "../middleware/auth";
 import { asyncHandler } from "../middleware/error";
-import { ContractService } from "../services/contract.service";
-import { raiseDisputeSchema, castVoteSchema, resolveDisputeSchema } from "../schemas/dispute";
-import { z } from "zod";
+import { validate } from "../middleware/validation";
+import { DisputeService } from "../services/dispute.service";
+import {
+  confirmDisputeTransactionSchema,
+  createDisputeSchema,
+  castVoteSchema,
+  disputeIdParamSchema,
+  initRaiseDisputeSchema,
+  queryDisputesSchema,
+  resolveDisputeSchema,
+  webhookPayloadSchema,
+} from "../schemas/dispute";
 
 const router = Router();
-const prisma = new PrismaClient();
 
-// Get all disputes (for community voters)
-router.get("/", asyncHandler(async (req: Request, res: Response) => {
-  const disputes = await prisma.dispute.findMany({
-    include: {
-      job: { select: { title: true, budget: true } },
-      initiator: { select: { username: true, walletAddress: true, avatarUrl: true } },
-      respondent: { select: { username: true, walletAddress: true, avatarUrl: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-  res.json(disputes);
-}));
+/**
+ * GET /api/disputes
+ * Get all disputes with optional filtering and pagination
+ */
+router.get(
+  "/",
+  authenticate,
+  validate({ query: queryDisputesSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const query = req.query as unknown as { page: number; limit: number };
 
-// Get specific dispute details
-router.get("/:id", asyncHandler(async (req: Request, res: Response) => {
-  const dispute = await prisma.dispute.findUnique({
-    where: { id: req.params.id as string },
-    include: {
-      job: { include: { client: true, freelancer: true } },
-      initiator: { select: { username: true, walletAddress: true, id: true, avatarUrl: true } },
-      respondent: { select: { username: true, walletAddress: true, id: true, avatarUrl: true } },
-      votes: { include: { voter: { select: { username: true, walletAddress: true, avatarUrl: true } } } },
-      attachments: true,
-    },
-  });
+    const result = await DisputeService.getDisputes(
+      { status: DisputeStatus.OPEN },
+      { page: query.page, limit: query.limit },
+    );
 
-  if (!dispute) return res.status(404).json({ error: "Dispute not found" });
-  res.json(dispute);
-}));
+    const disputes = (result.disputes as any[]).map((dispute: any) => {
+      const { walletAddress: _clientWalletAddress, ...client } = dispute.client;
+      const { walletAddress: _freelancerWalletAddress, ...freelancer } =
+        dispute.freelancer;
+      const { walletAddress: _initiatorWalletAddress, ...initiator } =
+        dispute.initiator;
 
-// Request XDR to raise a dispute
-router.post("/init-raise", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
-  const data = raiseDisputeSchema.parse(req.body);
-  const job = await prisma.job.findUnique({
-    where: { id: data.jobId },
-    include: { client: true, freelancer: true },
-  });
-
-  if (!job || !job.freelancer) {
-    return res.status(404).json({ error: "Job with assigned freelancer not found." });
-  }
-
-  if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
-    return res.status(403).json({ error: "Only job participants can raise a dispute." });
-  }
-
-  if (!job.contractJobId) {
-    return res.status(400).json({ error: "Job isn't initialized on-chain yet." });
-  }
-
-  // Determine initiator and respondent
-  const isClient = job.clientId === req.userId;
-  const initiator = isClient ? job.client : job.freelancer;
-  const respondent = isClient ? job.freelancer : job.client;
-
-  const xdr = await ContractService.buildRaiseDisputeTx(
-    initiator.walletAddress,
-    parseInt(job.contractJobId),
-    job.client.walletAddress,
-    job.freelancer.walletAddress,
-    data.reason,
-    data.minVotes
-  );
-
-  res.json({ xdr, respondentId: respondent.id });
-}));
-
-// Request XDR to cast a vote
-router.post("/init-vote", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
-  const data = castVoteSchema.parse(req.body);
-  const dispute = await prisma.dispute.findUnique({
-    where: { id: data.disputeId },
-  });
-
-  if (!dispute || !dispute.contractDisputeId) {
-    return res.status(404).json({ error: "On-chain dispute not found." });
-  }
-
-  const voter = await prisma.user.findUnique({ where: { id: req.userId } });
-  if (!voter) return res.status(404).json({ error: "User not found" });
-
-  const choiceEnum = data.choice === "CLIENT" ? 0 : 1;
-  const xdr = await ContractService.buildCastVoteTx(
-    voter.walletAddress,
-    parseInt(dispute.contractDisputeId),
-    choiceEnum,
-    data.reason
-  );
-
-  res.json({ xdr });
-}));
-
-// Request XDR to resolve dispute 
-router.post("/init-resolve", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
-  const data = resolveDisputeSchema.parse(req.body);
-  const dispute = await prisma.dispute.findUnique({
-    where: { id: data.disputeId }
-  });
-
-  if (!dispute || !dispute.contractDisputeId) {
-    return res.status(404).json({ error: "On-chain dispute not found." });
-  }
-
-  const caller = await prisma.user.findUnique({ where: { id: req.userId } });
-  if (!caller) return res.status(404).json({ error: "User not found" });
-
-  const xdr = await ContractService.buildResolveDisputeTx(
-    caller.walletAddress,
-    parseInt(dispute.contractDisputeId)
-  );
-
-  res.json({ xdr });
-}));
-
-// Confirm transaction and update local database
-router.post("/confirm-tx", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
-  const schema = z.object({
-    hash: z.string(),
-    type: z.enum(["RAISE_DISPUTE", "CAST_VOTE", "RESOLVE_DISPUTE"]),
-    jobId: z.string().optional(),
-    disputeId: z.string().optional(),
-    onChainDisputeId: z.number().optional(),
-    reason: z.string().optional(),
-    choice: z.string().optional(),
-    respondentId: z.string().optional(),
-  });
-
-  const data = schema.parse(req.body);
-  const verification = await ContractService.verifyTransaction(data.hash);
-  
-  if (!verification.success) {
-    return res.status(400).json({ error: `Transaction failed or not found: ${verification.error}` });
-  }
-
-  if (data.type === "RAISE_DISPUTE" && data.jobId && data.onChainDisputeId && data.respondentId && data.reason) {
-    const dispute = await prisma.dispute.create({
-      data: {
-        jobId: data.jobId,
-        contractDisputeId: data.onChainDisputeId.toString(),
-        initiatorId: req.userId!,
-        respondentId: data.respondentId,
-        reason: data.reason,
-        status: DisputeStatus.OPEN,
-      }
-    });
-    
-    await prisma.job.update({
-      where: { id: data.jobId },
-      data: { 
-        status: JobStatus.DISPUTED,
-        escrowStatus: "DISPUTED" 
-      }
-    });
-    return res.json({ message: "Dispute raised successfully", dispute });
-  } 
-  
-  else if (data.type === "CAST_VOTE" && data.disputeId && data.choice && data.reason) {
-    const vote = await prisma.vote.create({
-      data: {
-        disputeId: data.disputeId,
-        voterId: req.userId!,
-        choice: data.choice,
-        reason: data.reason
-      }
+      return {
+        ...dispute,
+        client,
+        freelancer,
+        initiator,
+      };
     });
 
-    const isClient = data.choice === "CLIENT";
-    await prisma.dispute.update({
-      where: { id: data.disputeId },
-      data: {
-        votesForClient: isClient ? { increment: 1 } : undefined,
-        votesForFreelancer: !isClient ? { increment: 1 } : undefined,
-        status: DisputeStatus.VOTING
-      }
-    });
-    return res.json({ message: "Vote cast successfully", vote });
-  }
+    // Community listing returns array for frontend compatibility
+    res.json(disputes);
+  }),
+);
 
-  else if (data.type === "RESOLVE_DISPUTE" && data.disputeId) {
-    const dispute = await prisma.dispute.findUnique({ where: { id: data.disputeId } });
-    if (!dispute) return res.status(404).json({ error: "Dispute not found" });
+/**
+ * GET /api/disputes/:id
+ * Get specific dispute details
+ */
+router.get(
+  "/:id",
+  authenticate,
+  validate({ params: disputeIdParamSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const dispute = (await DisputeService.getDisputeById(
+      req.params.id as string,
+    )) as any;
 
-    const resolvedStatus = dispute.votesForClient >= dispute.votesForFreelancer 
-      ? DisputeStatus.RESOLVED_CLIENT 
-      : DisputeStatus.RESOLVED_FREELANCER;
+    const userId = req.userId!;
+    const isParticipant =
+      dispute.clientId === userId ||
+      dispute.freelancerId === userId ||
+      dispute.initiatorId === userId;
 
-    await prisma.dispute.update({
-      where: { id: data.disputeId },
-      data: { status: resolvedStatus }
-    });
+    const isRegisteredVoter = Array.isArray(dispute.votes)
+      ? dispute.votes.some((vote: any) => vote.voterId === userId)
+      : false;
+    const isAdmin = req.userRole === UserRole.ADMIN;
 
-    // We also mark the job back to COMPLETED or leave it as DISPUTED but resolved?
-    // Let's mark it as COMPLETED since the contract releases funds.
-    await prisma.job.update({
-      where: { id: dispute.jobId },
-      data: { status: JobStatus.COMPLETED, escrowStatus: "COMPLETED" }
-    });
+    if (!isParticipant && !isRegisteredVoter && !isAdmin) {
+      res.status(403).json({
+        error:
+          "Access denied. Only dispute participants or registered voters can view this dispute.",
+      });
+      return;
+    }
 
-    return res.json({ message: "Dispute resolved successfully", status: resolvedStatus });
-  }
+    res.json(dispute);
+  }),
+);
 
-  res.status(400).json({ error: "Invalid confirmation parameters" });
-}));
+/**
+ * POST /api/disputes
+ * Create a new dispute
+ */
+router.post(
+  "/",
+  authenticate,
+  validate({ body: createDisputeSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = req.body as { jobId: string; reason: string };
+
+    const dispute = await DisputeService.createDispute(
+      data.jobId,
+      req.userId!,
+      data.reason,
+    );
+
+    res.status(201).json(dispute);
+  }),
+);
+
+/**
+ * POST /api/disputes/init-raise
+ * Initialize dispute creation (get XDR for signing)
+ */
+router.post(
+  "/init-raise",
+  authenticate,
+  validate({ body: initRaiseDisputeSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { jobId, reason, minVotes } = req.body;
+
+    const dispute = await DisputeService.initRaiseDispute(
+      jobId,
+      req.userId!,
+      reason,
+      minVotes,
+    );
+
+    res.json(dispute);
+  }),
+);
+
+/**
+ * POST /api/disputes/confirm-tx
+ * Confirm dispute transaction
+ */
+router.post(
+  "/confirm-tx",
+  authenticate,
+  validate({ body: confirmDisputeTransactionSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const { hash, type, jobId, onChainDisputeId, respondentId, reason } =
+      req.body;
+
+    const result = await DisputeService.confirmDisputeTransaction(
+      hash,
+      type,
+      jobId,
+      onChainDisputeId,
+      respondentId,
+      reason,
+      req.userId!,
+    );
+
+    res.json(result);
+  }),
+);
+
+/**
+ * POST /api/disputes/:id/votes
+ * Cast a vote on a dispute
+ */
+router.post(
+  "/:id/votes",
+  authenticate,
+  validate({ params: disputeIdParamSchema, body: castVoteSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const dispute = await DisputeService.getDisputeById(
+      req.params.id as string,
+    );
+    if (!dispute) {
+      return res.status(404).json({ error: "Dispute not found." });
+    }
+
+    // Conflict-of-interest check: Job participants cannot vote
+    if (
+      dispute.job.clientId === req.userId ||
+      dispute.job.freelancerId === req.userId
+    ) {
+      return res.status(403).json({
+        error:
+          "Job participants (client or freelancer) cannot vote on their own dispute.",
+      });
+    }
+    const data = req.body as { choice: "CLIENT" | "FREELANCER"; reason: string };
+
+    const vote = await DisputeService.castVote(
+      req.params.id as string,
+      req.userId!,
+      data.choice,
+      data.reason,
+    );
+
+    res.status(201).json(vote);
+  }),
+);
+
+/**
+ * PUT /api/disputes/:id/resolve
+ * Resolve a dispute (admin only or automated)
+ */
+router.put(
+  "/:id/resolve",
+  authenticate,
+  validate({ params: disputeIdParamSchema, body: resolveDisputeSchema }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const data = req.body as { outcome: string };
+
+    const dispute = await DisputeService.resolveDispute(
+      req.params.id as string,
+      data.outcome,
+    );
+
+    res.json(dispute);
+  }),
+);
+
+/**
+ * GET /api/disputes/:id/stats
+ * Get vote statistics for a dispute
+ */
+router.get(
+  "/:id/stats",
+  validate({ params: disputeIdParamSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const stats = await DisputeService.getVoteStats(req.params.id as string);
+    res.json(stats);
+  }),
+);
+
+/**
+ * POST /api/disputes/webhook
+ * Process blockchain webhook events
+ */
+router.post(
+  "/webhook",
+  validate({ body: webhookPayloadSchema }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const payload = req.body;
+
+    const result = await DisputeService.processWebhook(payload);
+
+    res.json(result);
+  }),
+);
 
 export default router;

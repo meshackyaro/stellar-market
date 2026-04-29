@@ -200,7 +200,7 @@ router.get(
         return res.status(404).json({ error: "File not found" });
       }
 
-      // Access control: only job participants can download
+      // Access control: job participants can download job / milestone files
       if (attachment.job) {
         const isParticipant =
           attachment.job.clientId === req.userId ||
@@ -210,8 +210,6 @@ router.get(
           return res.status(403).json({ error: "Access denied" });
         }
       } else if (attachment.uploaderId !== req.userId) {
-        // For dispute files, only uploader can access (for now)
-        // TODO: Add dispute voter access control
         return res.status(403).json({ error: "Access denied" });
       }
 
