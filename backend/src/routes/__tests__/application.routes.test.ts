@@ -18,6 +18,13 @@ jest.mock("@prisma/client", () => {
       count: jest.fn(),
       update: jest.fn(),
     },
+    user: {
+      findUnique: jest.fn().mockResolvedValue({
+        id: "00000000-0000-4000-8000-000000000001",
+        role: "CLIENT",
+        emailVerified: true,
+      }),
+    },
   };
 
   return {
@@ -139,4 +146,69 @@ describe("GET /api/jobs/:jobId/applications", () => {
     );
   });
 });
+
+describe("POST /api/jobs/:jobId/apply", () => {
+  it("returns 400 when user tries to apply to their own job", async () => {
+    jobMock.findUnique.mockResolvedValueOnce({
+      id: JOB_ID,
+      clientId: CLIENT_A_ID,
+      status: "OPEN",
+    });
+
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_ID}/apply`)
+      .set(authHeader(CLIENT_A_ID))
+      .send({
+        jobId: JOB_ID,
+        proposal: "I want to apply to my own job. This is a test proposal that is long enough to pass validation requirements.",
+        estimatedDuration: 14,
+        bidAmount: 500,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "You cannot apply to your own job." });
+    expect(applicationMock.findUnique).not.toHaveBeenCalled();
+    expect(applicationMock.create).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when job does not exist", async () => {
+    jobMock.findUnique.mockResolvedValueOnce(null);
+
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_ID}/apply`)
+      .set(authHeader(CLIENT_A_ID))
+      .send({
+        jobId: JOB_ID,
+        proposal: "Test proposal that is long enough to meet the minimum character requirement for validation.",
+        estimatedDuration: 14,
+        bidAmount: 500,
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Job not found." });
+  });
+
+  it("returns 400 when job is not open", async () => {
+    jobMock.findUnique.mockResolvedValueOnce({
+      id: JOB_ID,
+      clientId: CLIENT_B_ID,
+      status: "IN_PROGRESS",
+    });
+
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_ID}/apply`)
+      .set(authHeader(CLIENT_A_ID))
+      .send({
+        jobId: JOB_ID,
+        proposal: "Test proposal that is long enough to meet the minimum character requirement for validation.",
+        estimatedDuration: 14,
+        bidAmount: 500,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "Job is not accepting applications." });
+  });
+});
+
+
 

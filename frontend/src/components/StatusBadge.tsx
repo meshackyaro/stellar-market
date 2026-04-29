@@ -9,6 +9,7 @@ const statusColors: Record<string, string> = {
   APPROVED: "bg-theme-success/20 text-theme-success border-theme-success/30",
   REJECTED: "bg-theme-error/20 text-theme-error border-theme-error/30",
   ACCEPTED: "bg-theme-success/20 text-theme-success border-theme-success/30",
+  PARTIALLY_PAID: "bg-amber-500/20 text-amber-500 border-amber-500/30",
 };
 
 interface StatusBadgeProps {

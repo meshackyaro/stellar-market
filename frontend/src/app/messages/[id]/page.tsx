@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Send, ArrowLeft, User, Briefcase, Paperclip } from "lucide-react";
 import axios from "axios";
@@ -8,6 +8,7 @@ import { Message } from "@/types";
 import MessageBubble from "@/components/MessageBubble";
 import Image from "next/image";
 import { useAuth } from "@/context/AuthContext";
+import { useSocket } from "@/context/SocketContext";
 
 type Job = {
   [key: string]: string;
@@ -19,7 +20,8 @@ type User = {
 
 export default function ChatThreadPage() {
   const { id } = useParams();
-  const { token } = useAuth();
+  const { token, user: currentUser } = useAuth();
+  const { socket } = useSocket();
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
@@ -29,57 +31,79 @@ export default function ChatThreadPage() {
   const [job, setJob] = useState<Job | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Parse the combined ID (otherUserId-jobId or otherUserId-no-job)
   const [otherUserId, jobId] = (id as string).split("-");
   const actualJobId = jobId === "no-job" ? null : jobId;
 
-  useEffect(() => {
-    const fetchChat = async () => {
-      try {
-        if (!token) return;
-        setLoading(true);
-        const response = await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"}/messages?participantId=${otherUserId}${actualJobId ? `&jobId=${actualJobId}` : ""}`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          },
-        );
+  const fetchChat = useCallback(async () => {
+    try {
+      if (!token) return;
+      setLoading(true);
+      const response = await axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"}/messages?participantId=${otherUserId}${actualJobId ? `&jobId=${actualJobId}` : ""}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
 
-        const fetchedMessages = response.data;
-        setMessages(fetchedMessages);
+      const fetchedMessages = response.data;
+      setMessages(fetchedMessages);
 
-        // Extract other user and job info from messages if available
-        if (fetchedMessages.length > 0) {
-          const firstMsg = fetchedMessages[0];
-          const other =
-            firstMsg.senderId === otherUserId
-              ? firstMsg.sender
-              : firstMsg.receiver;
-          setOtherUser(other);
-          setJob(firstMsg.job);
-        } else {
-          // If no messages yet, we might need to fetch user/job info separately
-          // For now, we'll try to find it from the first message sent or a fallback
-        }
-
-        // Mark all as read
-        await axios.get(
-          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"}/messages/${otherUserId}${actualJobId ? `?jobId=${actualJobId}` : ""}`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          },
-        );
-      } catch (err) {
-        console.error("Fetch chat error:", err);
-      } finally {
-        setLoading(false);
+      if (fetchedMessages.length > 0) {
+        const firstMsg = fetchedMessages[0];
+        const other =
+          firstMsg.senderId === otherUserId
+            ? firstMsg.sender
+            : firstMsg.receiver;
+        setOtherUser(other);
+        setJob(firstMsg.job);
       }
-    };
 
+      await axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"}/messages/${otherUserId}${actualJobId ? `?jobId=${actualJobId}` : ""}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+    } catch (err) {
+      console.error("Fetch chat error:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [token, otherUserId, actualJobId]);
+
+  useEffect(() => {
     if (id && token) {
       fetchChat();
     }
-  }, [id, otherUserId, actualJobId, token]);
+  }, [id, token, fetchChat]);
+
+  useEffect(() => {
+    if (!socket || !currentUser?.id) return;
+
+    const handleNewMessage = (message: Message) => {
+      const isRelevant =
+        (message.senderId === otherUserId || message.receiverId === otherUserId) &&
+        (message.senderId === currentUser.id || message.receiverId === currentUser.id);
+
+      if (!isRelevant) return;
+
+      setMessages((prev) => {
+        const exists = prev.some((m) => m.id === message.id);
+        if (exists) return prev;
+        return [...prev, message];
+      });
+
+      if (message.senderId === otherUserId) {
+        socket.emit("mark_read", { senderId: otherUserId });
+      }
+    };
+
+    socket.on("new_message", handleNewMessage);
+
+    return () => {
+      socket.off("new_message", handleNewMessage);
+    };
+  }, [socket, otherUserId, currentUser?.id]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -94,20 +118,29 @@ export default function ChatThreadPage() {
     try {
       if (!token) return;
       setSending(true);
-      const response = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"}/messages`,
-        {
+
+      if (socket?.connected) {
+        socket.emit("send_message", {
           receiverId: otherUserId,
           jobId: actualJobId,
           content: newMessage,
-        },
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
-
-      setMessages([...messages, response.data]);
-      setNewMessage("");
+        });
+        setNewMessage("");
+      } else {
+        const response = await axios.post(
+          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"}/messages`,
+          {
+            receiverId: otherUserId,
+            jobId: actualJobId,
+            content: newMessage,
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        );
+        setMessages([...messages, response.data]);
+        setNewMessage("");
+      }
     } catch (err) {
       console.error("Send message error:", err);
     } finally {

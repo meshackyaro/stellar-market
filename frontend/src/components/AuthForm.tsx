@@ -12,7 +12,7 @@ interface AuthFormProps {
 
 export default function AuthForm({ type }: AuthFormProps) {
   const { login, register } = useAuth();
-  const { address, connect } = useWallet();
+  const { address, connect, isConnecting, error: walletError } = useWallet();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -115,7 +115,7 @@ export default function AuthForm({ type }: AuthFormProps) {
           <ShieldCheck size={48} className="mx-auto mb-4 text-stellar-blue" />
           <h1 className="text-3xl font-bold text-dark-heading mb-2">Two-Factor Authentication</h1>
           <p className="text-dark-muted">
-            Enter the 6-digit code from your authenticator app, or use a backup code.
+            Enter the 6-digit code from your authenticator app, or an 8-character recovery code.
           </p>
         </div>
 
@@ -135,9 +135,10 @@ export default function AuthForm({ type }: AuthFormProps) {
                 value={totpCode}
                 onChange={(e) => setTotpCode(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 bg-dark-bg border border-dark-border rounded-lg focus:ring-2 focus:ring-stellar-blue outline-none transition-all text-dark-text text-center tracking-widest"
-                placeholder="000000"
+                placeholder="000000 or recovery"
                 autoFocus
                 autoComplete="one-time-code"
+                maxLength={32}
               />
             </div>
           </div>
@@ -247,13 +248,36 @@ export default function AuthForm({ type }: AuthFormProps) {
                   <button
                     type="button"
                     onClick={connect}
-                    className="btn-primary py-2 px-4 text-sm"
+                    disabled={isConnecting}
+                    className="btn-primary py-2 px-4 text-sm flex items-center gap-2 disabled:opacity-60"
                   >
-                    Connect
+                    {isConnecting ? <Loader2 size={14} className="animate-spin" /> : null}
+                    {isConnecting ? "Connecting…" : "Connect"}
                   </button>
                 )}
               </div>
-              {!address && type === "register" && (
+              {walletError === "NOT_INSTALLED" && (
+                <p className="text-xs text-theme-error mt-1">
+                  Freighter wallet extension is not installed.{" "}
+                  <a
+                    href="https://freighter.app"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline hover:opacity-80"
+                  >
+                    Install Freighter ↗
+                  </a>
+                </p>
+              )}
+              {walletError === "LOCKED" && (
+                <p className="text-xs text-theme-error mt-1">
+                  Please unlock your Freighter wallet and try again.
+                </p>
+              )}
+              {walletError && walletError !== "NOT_INSTALLED" && walletError !== "LOCKED" && (
+                <p className="text-xs text-theme-error mt-1">{walletError}</p>
+              )}
+              {!address && !walletError && type === "register" && (
                 <p className="text-xs text-theme-error mt-1">Wallet is required for registration</p>
               )}
             </div>

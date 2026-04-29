@@ -87,6 +87,21 @@ and values recomputed from the `Review` table. The command prints `No review agg
 mismatches found.` when everything is consistent; otherwise it prints the mismatched users
 and exits non-zero.
 
+## API Rate Limiting
+
+The API enforces rate limits to prevent abuse and ensure fair usage:
+
+| Endpoint | Limit | Window | Key |
+|----------|-------|--------|-----|
+| `/api/*` (global) | 200 requests | 15 minutes | IP address |
+| `/api/auth/*` | 10 requests | 15 minutes | IP address |
+| `POST /api/jobs` | 30 requests | 1 hour | User ID (fallback: IP) |
+| `POST /api/reviews` | 30 requests | 1 hour | User ID (fallback: IP) |
+| `POST /api/disputes` | 30 requests | 1 hour | User ID (fallback: IP) |
+| `/api/auth/forgot-password` | 3 requests | 1 hour | IP address |
+
+When a limit is exceeded, the API returns `429 Too Many Requests` with a `Retry-After` header indicating seconds until the limit resets.
+
 ## Contributing
 
 We welcome contributions! Please see our [Contributing Guide](docs/CONTRIBUTING.md) for details.

@@ -15,19 +15,52 @@ type RaiseDisputeModalProps = {
   onSuccess: () => void;
 };
 
-export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: RaiseDisputeModalProps) {
+export default function RaiseDisputeModal({
+  job,
+  isOpen,
+  onClose,
+  onSuccess,
+}: RaiseDisputeModalProps) {
   const { signAndBroadcastTransaction } = useWallet();
   const [reason, setReason] = useState("");
   const [minVotes, setMinVotes] = useState<number>(3);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reasonTouched, setReasonTouched] = useState(false);
 
   if (!isOpen) return null;
 
+  // Check if escrow is funded
+  const isEscrowFunded = job.escrowStatus === "FUNDED";
+
+  const trimmedReason = reason.trim();
+  const reasonError =
+    trimmedReason.length === 0
+      ? "Please describe the dispute reason."
+      : trimmedReason.length < 20
+        ? "Please describe the dispute in at least 20 characters."
+        : null;
+  const canSubmit = isEscrowFunded && !processing && !reasonError;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (reason.length < 10) {
-      setError("Please provide a more detailed reason for the dispute (at least 10 characters).");
+    setReasonTouched(true);
+
+    // Validate escrow status
+    if (!isEscrowFunded) {
+      setError("Escrow must be funded before a dispute can be raised.");
+      return;
+    }
+
+    if (reasonError) {
+      setError(reasonError);
+      return;
+    }
+
+    if (reason.length > 2000) {
+      setError(
+        "Reason must not exceed 2000 characters. Please shorten your description.",
+      );
       return;
     }
 
@@ -41,7 +74,7 @@ export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: R
       const res = await axios.post(
         `${API_URL}/disputes/init-raise`,
         { jobId: job.id, reason, minVotes },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: `Bearer ${token}` } },
       );
 
       // 2. Sign & Broadcast
@@ -62,13 +95,18 @@ export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: R
           respondentId: res.data.respondentId,
           reason,
         },
-        { headers: { Authorization: `Bearer ${token}` } }
+        { headers: { Authorization: `Bearer ${token}` } },
       );
 
       onSuccess();
       onClose();
     } catch (err: unknown) {
-      const errorMsg = err instanceof AxiosError ? err.response?.data?.error : (err instanceof Error ? err.message : "An error occurred");
+      const errorMsg =
+        err instanceof AxiosError
+          ? err.response?.data?.error
+          : err instanceof Error
+            ? err.message
+            : "An error occurred";
       setError(errorMsg || "An error occurred");
     } finally {
       setProcessing(false);
@@ -99,6 +137,13 @@ export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: R
             </div>
           )}
 
+          {!isEscrowFunded && (
+            <div className="p-3 text-sm text-theme-error bg-theme-error/10 border border-theme-error/20 rounded-lg">
+              Escrow must be funded before a dispute can be raised. Current
+              status: {job.escrowStatus}
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-theme-heading mb-1">
               Reason for Dispute
@@ -108,10 +153,33 @@ export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: R
               placeholder="Explain clearly why you are initiating a dispute. Provide specific details about unfulfilled requirements or issues."
               value={reason}
               onChange={(e) => setReason(e.target.value)}
+              onBlur={() => setReasonTouched(true)}
               disabled={processing}
+              maxLength={2000}
               required
             />
-            <p className="text-xs text-theme-text mt-1">This will be visible to community voters.</p>
+            <div className="flex justify-between items-center mt-1">
+              <p className="text-xs text-theme-text">
+                This will be visible to community voters.
+              </p>
+              <span
+                className={`text-xs tabular-nums ${
+                  reason.length >= 2000
+                    ? "text-theme-error font-semibold"
+                    : "text-theme-text"
+                }`}
+              >
+                {reason.length} / 2000
+              </span>
+            </div>
+            {reason.length >= 2000 && (
+              <p className="text-xs text-theme-error mt-1">
+                Character limit reached. Please shorten your description.
+              </p>
+            )}
+            {reasonTouched && reasonError && (
+              <p className="text-xs text-theme-error mt-1">{reasonError}</p>
+            )}
           </div>
 
           <div>
@@ -128,7 +196,9 @@ export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: R
               disabled={processing}
               required
             />
-            <p className="text-xs text-theme-text mt-1">The dispute automatically resolves when this many votes are cast.</p>
+            <p className="text-xs text-theme-text mt-1">
+              The dispute automatically resolves when this many votes are cast.
+            </p>
           </div>
 
           <div className="flex gap-3 pt-2">
@@ -142,8 +212,8 @@ export default function RaiseDisputeModal({ job, isOpen, onClose, onSuccess }: R
             </button>
             <button
               type="submit"
-              disabled={processing}
-              className="btn-primary flex-1 bg-theme-error hover:bg-theme-error/90 border border-transparent text-white"
+              disabled={processing || !canSubmit}
+              className="btn-primary flex-1 bg-theme-error hover:bg-theme-error/90 border border-transparent text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {processing ? (
                 <span className="flex items-center gap-2 justify-center">

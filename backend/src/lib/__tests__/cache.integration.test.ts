@@ -17,7 +17,7 @@ jest.mock("../redis", () => {
     connect: jest.fn(),
     quit: jest.fn(),
   };
-  
+
   return {
     __esModule: true,
     default: {
@@ -86,6 +86,16 @@ function authHeader(userId = USER_TEST_ID) {
   return { Authorization: `Bearer ${token}` };
 }
 
+beforeEach(() => {
+  jest.clearAllMocks();
+  // Ensure authenticated requests pass the authenticate middleware
+  userMock.findUnique.mockResolvedValue({
+    id: USER_TEST_ID,
+    role: UserRole.CLIENT,
+    emailVerified: true,
+  });
+});
+
 afterEach(() => jest.clearAllMocks());
 
 describe("Cache Integration Tests", () => {
@@ -113,7 +123,7 @@ describe("Cache Integration Tests", () => {
       // Mock cache miss on first request
       mockRedis.get.mockResolvedValueOnce(null);
       mockRedis.setex.mockResolvedValueOnce("OK");
-      
+
       // Mock database response
       jobMock.findMany.mockResolvedValueOnce(mockJobData.data);
       jobMock.count.mockResolvedValueOnce(mockJobData.total);
@@ -124,14 +134,14 @@ describe("Cache Integration Tests", () => {
         .set(authHeader());
 
       expect(res1.status).toBe(200);
-      expect(res1.headers['x-cache-hit']).toBe('false');
+      expect(res1.headers["x-cache-hit"]).toBe("false");
       expect(mockRedis.get).toHaveBeenCalledWith(
-        expect.stringMatching(/^jobs:list:/)
+        expect.stringMatching(/^jobs:list:/),
       );
       expect(mockRedis.setex).toHaveBeenCalledWith(
         expect.stringMatching(/^jobs:list:/),
         60,
-        expect.any(String)
+        expect.any(String),
       );
 
       // Mock cache hit on second request
@@ -143,9 +153,9 @@ describe("Cache Integration Tests", () => {
         .set(authHeader());
 
       expect(res2.status).toBe(200);
-      expect(res2.headers['x-cache-hit']).toBe('true');
+      expect(res2.headers["x-cache-hit"]).toBe("true");
       expect(res2.body).toEqual(mockJobData);
-      
+
       // Database should not be called on cache hit
       expect(jobMock.findMany).toHaveBeenCalledTimes(1);
       expect(jobMock.count).toHaveBeenCalledTimes(1);
@@ -154,7 +164,7 @@ describe("Cache Integration Tests", () => {
     it("should generate different cache keys for different query parameters", async () => {
       mockRedis.get.mockResolvedValue(null);
       mockRedis.setex.mockResolvedValue("OK");
-      
+
       jobMock.findMany.mockResolvedValue([]);
       jobMock.count.mockResolvedValue(0);
 
@@ -170,10 +180,10 @@ describe("Cache Integration Tests", () => {
       // Should have different cache keys
       expect(mockRedis.get).toHaveBeenCalledTimes(2);
       expect(mockRedis.setex).toHaveBeenCalledTimes(2);
-      
+
       const firstCallKey = (mockRedis.get as jest.Mock).mock.calls[0][0];
       const secondCallKey = (mockRedis.get as jest.Mock).mock.calls[1][0];
-      
+
       expect(firstCallKey).not.toBe(secondCallKey);
     });
   });
@@ -186,6 +196,7 @@ describe("Cache Integration Tests", () => {
       bio: "Test bio",
       avatarUrl: null,
       role: "FREELANCER",
+      emailVerified: true,
       createdAt: new Date().toISOString(),
       reviewsReceived: [],
       clientJobs: [],
@@ -198,7 +209,7 @@ describe("Cache Integration Tests", () => {
       // Mock cache miss on first request
       mockRedis.get.mockResolvedValueOnce(null);
       mockRedis.setex.mockResolvedValueOnce("OK");
-      
+
       // Mock database response
       userMock.findUnique.mockResolvedValueOnce({
         id: USER_OTHER_ID,
@@ -207,6 +218,7 @@ describe("Cache Integration Tests", () => {
         bio: "Test bio",
         avatarUrl: null,
         role: "FREELANCER",
+        emailVerified: true,
         createdAt: new Date(),
         reviewsReceived: [],
         clientJobs: [],
@@ -219,12 +231,14 @@ describe("Cache Integration Tests", () => {
         .set(authHeader());
 
       expect(res1.status).toBe(200);
-      expect(res1.headers['x-cache-hit']).toBe('false');
-      expect(mockRedis.get).toHaveBeenCalledWith(`user:profile:${USER_OTHER_ID}`);
+      expect(res1.headers["x-cache-hit"]).toBe("false");
+      expect(mockRedis.get).toHaveBeenCalledWith(
+        `user:profile:${USER_OTHER_ID}`,
+      );
       expect(mockRedis.setex).toHaveBeenCalledWith(
         `user:profile:${USER_OTHER_ID}`,
         300,
-        expect.any(String)
+        expect.any(String),
       );
 
       // Mock cache hit on second request
@@ -236,16 +250,16 @@ describe("Cache Integration Tests", () => {
         .set(authHeader());
 
       expect(res2.status).toBe(200);
-      expect(res2.headers['x-cache-hit']).toBe('true');
+      expect(res2.headers["x-cache-hit"]).toBe("true");
       expect(res2.body).toEqual(mockUserData);
-      
+
       // Database should not be called on cache hit
       expect(userMock.findUnique).toHaveBeenCalledTimes(1);
     });
 
     it("should handle user not found correctly", async () => {
       mockRedis.get.mockResolvedValueOnce(null);
-      userMock.findUnique.mockResolvedValueOnce(null);
+      userMock.findUnique.mockResolvedValue(null);
 
       const res = await request(app)
         .get(`/api/users/${USER_OTHER_ID}`)
@@ -274,7 +288,10 @@ describe("Cache Integration Tests", () => {
 
       // Mock successful job creation
       jobMock.create.mockResolvedValueOnce(mockJob);
-      mockRedis.keys.mockResolvedValueOnce(["jobs:list:abc123", "jobs:list:def456"]);
+      mockRedis.keys.mockResolvedValueOnce([
+        "jobs:list:abc123",
+        "jobs:list:def456",
+      ]);
       mockRedis.del.mockResolvedValueOnce(2);
 
       const res = await request(app)
@@ -282,7 +299,8 @@ describe("Cache Integration Tests", () => {
         .set(authHeader())
         .send({
           title: "New Job",
-          description: "Description for the new job that is at least 20 characters long",
+          description:
+            "Description for the new job that is at least 20 characters long",
           budget: 1000,
           skills: ["JavaScript"],
           deadline: "2026-12-31T23:59:59Z",
@@ -291,7 +309,10 @@ describe("Cache Integration Tests", () => {
 
       expect(res.status).toBe(201);
       expect(mockRedis.keys).toHaveBeenCalledWith("jobs:list:*");
-      expect(mockRedis.del).toHaveBeenCalledWith("jobs:list:abc123", "jobs:list:def456");
+      expect(mockRedis.del).toHaveBeenCalledWith(
+        "jobs:list:abc123",
+        "jobs:list:def456",
+      );
     });
 
     it("should invalidate user profile cache when updating profile", async () => {
@@ -312,7 +333,9 @@ describe("Cache Integration Tests", () => {
         .send({ bio: "Updated bio" });
 
       expect(res.status).toBe(200);
-      expect(mockRedis.del).toHaveBeenCalledWith(`user:profile:${USER_TEST_ID}`);
+      expect(mockRedis.del).toHaveBeenCalledWith(
+        `user:profile:${USER_TEST_ID}`,
+      );
     });
   });
 
@@ -321,7 +344,7 @@ describe("Cache Integration Tests", () => {
       // Mock Redis connection failure
       RedisClient.isRedisConnected.mockReturnValue(false);
       mockRedis.get.mockRejectedValueOnce(new Error("Redis connection failed"));
-      
+
       // Mock database response
       jobMock.findMany.mockResolvedValueOnce([]);
       jobMock.count.mockResolvedValueOnce(0);
@@ -333,11 +356,12 @@ describe("Cache Integration Tests", () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
         data: [],
+        nextCursor: null,
         total: 0,
         page: 1,
         totalPages: 0,
       });
-      
+
       // Should still attempt database query
       expect(jobMock.findMany).toHaveBeenCalledTimes(1);
       expect(jobMock.count).toHaveBeenCalledTimes(1);
@@ -347,7 +371,7 @@ describe("Cache Integration Tests", () => {
       // Mock cache miss but set fails
       mockRedis.get.mockResolvedValueOnce(null);
       mockRedis.setex.mockRejectedValueOnce(new Error("Redis set failed"));
-      
+
       // Mock database response (called twice due to cache error retry)
       jobMock.findMany.mockResolvedValue([]);
       jobMock.count.mockResolvedValue(0);
@@ -357,8 +381,8 @@ describe("Cache Integration Tests", () => {
         .set(authHeader());
 
       expect(res.status).toBe(200);
-      expect(res.headers['x-cache-hit']).toBe('false');
-      
+      expect(res.headers["x-cache-hit"]).toBe("false");
+
       // Database is called twice due to cache error retry logic
       expect(jobMock.findMany).toHaveBeenCalledTimes(2);
       expect(jobMock.count).toHaveBeenCalledTimes(2);

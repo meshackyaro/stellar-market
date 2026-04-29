@@ -2,11 +2,11 @@ import { z } from "zod";
 
 export const paginationSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(10),
+  limit: z.coerce.number().int().positive().min(1).max(100).default(20),
 });
 
 export const idParamSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1, "ID is required"),
 });
 
 export const objectIdSchema = z.string().min(1, "ID is required");
@@ -53,8 +53,9 @@ export const applicationStatusSchema = z.enum([
 export const milestoneStatusSchema = z.enum([
   "PENDING",
   "IN_PROGRESS",
-  "COMPLETED",
-  "CANCELLED",
+  "SUBMITTED",
+  "APPROVED",
+  "REJECTED",
 ]);
 
 export const reviewRatingSchema = z.number().int().min(1).max(5);

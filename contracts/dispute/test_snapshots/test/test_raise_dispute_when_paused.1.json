@@ -145,6 +145,18 @@
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                         }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "SlashAmount"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u64": 50
+                        }
                       }
                     ]
                   }

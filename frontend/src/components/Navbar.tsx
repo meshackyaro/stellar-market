@@ -11,35 +11,68 @@ import {
   PenLine,
   LogOut,
   User as UserIcon,
+  Users,
   Settings,
   Search,
   ShieldCheck,
+  Unplug,
+  Wallet,
+  ChevronDown,
+  Loader2,
 } from "lucide-react";
 import axios from "axios";
 import { useState, useRef, useEffect } from "react";
-import { useWallet } from "@/context/WalletContext";
+import { useWallet, truncateAddress } from "@/context/WalletContext";
 import { useSocket } from "@/context/SocketContext";
 import { useAuth } from "@/context/AuthContext";
+import { usePathname, useRouter } from "next/navigation";
+import { useToast } from "@/components/Toast";
 import ThemeToggleButton from "./ThemeToggleButton";
 import NotificationBell from "./NotificationBell";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000/api";
 
 function UserMenu({ className }: { className?: string }) {
-  const { disconnect } = useWallet();
+  const { address, disconnect, balance, balances, isLoadingBalance } = useWallet();
   const { user, logout, isLoading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [balanceDropdownOpen, setBalanceDropdownOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const balanceRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
+  const { toast } = useToast();
+
+  // Handle wallet disconnect events
+  useEffect(() => {
+    const handleWalletDisconnected = () => {
+      toast.error("Wallet disconnected — please reconnect");
+    };
+
+    window.addEventListener("stellarmarket:walletDisconnected", handleWalletDisconnected);
+    return () => {
+      window.removeEventListener("stellarmarket:walletDisconnected", handleWalletDisconnected);
+    };
+  }, [toast]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
       }
+      if (balanceRef.current && !balanceRef.current.contains(e.target as Node)) {
+        setBalanceDropdownOpen(false);
+      }
     }
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  /** Disconnects Freighter wallet without ending the backend session. */
+  const handleDisconnect = () => {
+    disconnect();
+    setMenuOpen(false);
+    router.push("/");
+  };
 
   if (isLoading) {
     return (
@@ -74,16 +107,25 @@ function UserMenu({ className }: { className?: string }) {
             <p className="text-sm font-medium text-theme-heading leading-tight">
               {user.username}
             </p>
-            <p className="text-xs text-theme-text leading-tight">{user.role}</p>
+            {/* Show live Freighter address when connected, else DB address */}
+            <p className="text-xs text-theme-text leading-tight font-mono">
+              {address ? truncateAddress(address) : user.role}
+            </p>
           </div>
         </button>
         {menuOpen && (
-          <div className="absolute right-0 mt-2 w-56 bg-theme-card border border-theme-border rounded-xl shadow-2xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
+          <div className="absolute right-0 mt-2 w-64 bg-theme-card border border-theme-border rounded-xl shadow-2xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
             <div className="px-4 py-3 border-b border-theme-border mb-1">
               <p className="text-sm font-medium text-theme-heading">
                 {user.username}
               </p>
-              <p className="text-xs text-theme-text break-all">
+              {/* Truncated Freighter address in header */}
+              {address && (
+                <p className="text-xs text-stellar-blue font-mono mt-0.5">
+                  {truncateAddress(address)}
+                </p>
+              )}
+              <p className="text-xs text-theme-text break-all mt-0.5">
                 {user.walletAddress}
               </p>
             </div>
@@ -111,6 +153,23 @@ function UserMenu({ className }: { className?: string }) {
               <Settings size={16} />
               Settings
             </Link>
+
+            {/* Wallet disconnect section — only shown when Freighter is connected */}
+            {address && (
+              <>
+                <div className="border-t border-theme-border mx-2 my-1" />
+                <button
+                  onClick={handleDisconnect}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-theme-error hover:bg-theme-error/10 transition-colors text-left"
+                  aria-label="Disconnect Freighter wallet"
+                >
+                  <Unplug size={16} />
+                  Disconnect Wallet
+                </button>
+              </>
+            )}
+
+            <div className="border-t border-theme-border mx-2 my-1" />
             <button
               onClick={() => {
                 logout();
@@ -139,6 +198,65 @@ function UserMenu({ className }: { className?: string }) {
       <Link href="/auth/register" className="btn-primary text-sm py-2 px-4">
         Sign Up
       </Link>
+    </div>
+  );
+}
+
+/** Wallet balance display with dropdown for other assets */
+function WalletBalanceDisplay() {
+  const { address, balance, balances, isLoadingBalance } = useWallet();
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  if (!address || !balance) return null;
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setDropdownOpen(!dropdownOpen)}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-theme-border hover:bg-theme-border/50 transition-colors text-sm"
+        title={`Full balance: ${balance} XLM`}
+      >
+        {isLoadingBalance ? (
+          <Loader2 size={14} className="animate-spin" />
+        ) : (
+          <>
+            <span className="font-medium text-theme-heading">{balance}</span>
+            <span className="text-theme-text">XLM</span>
+            {balances.length > 1 && <ChevronDown size={14} className="text-theme-text" />}
+          </>
+        )}
+      </button>
+
+      {/* Dropdown for other balances */}
+      {dropdownOpen && balances.length > 1 && (
+        <div className="absolute right-0 mt-2 w-56 bg-theme-card border border-theme-border rounded-xl shadow-2xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
+          <div className="px-4 py-2 border-b border-theme-border mb-1">
+            <p className="text-xs font-semibold text-theme-text uppercase">All Balances</p>
+          </div>
+          <div className="max-h-64 overflow-y-auto">
+            {balances.map((b) => (
+              <div
+                key={b.asset}
+                className="flex items-center justify-between px-4 py-2.5 text-sm text-theme-text hover:bg-theme-border/50 transition-colors"
+              >
+                <span className="font-medium">{b.asset}</span>
+                <span className="text-theme-heading">{parseFloat(b.balance).toFixed(2)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -192,6 +310,29 @@ function UnreadBadge() {
 
 export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { user } = useAuth();
+  const pathname = usePathname();
+  const isClient = user?.role === "CLIENT";
+  const isFreelancer = user?.role === "FREELANCER";
+
+  const navLinks = [
+    { href: "/jobs", label: isFreelancer ? "Find Work" : "Jobs", icon: Briefcase, hide: isClient },
+    { href: "/services", label: "Services", icon: Search },
+    { href: "/freelancers", label: "Talent", icon: Users },
+    { href: "/disputes", label: "Disputes", icon: ShieldCheck },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/messages", label: "Messages", icon: MessageSquare, id: "messages-nav-link" },
+    { href: "/wallet", label: "Wallet", icon: Wallet },
+  ];
+
+  if (isClient) {
+    navLinks.push({ href: "/post-job", label: "Post a Job", icon: PenLine });
+  }
+
+  const isActive = (path: string) => {
+    if (path === "/" && pathname !== "/") return false;
+    return pathname?.startsWith(path);
+  };
 
   return (
     <nav className="border-b border-theme-border bg-theme-bg/80 backdrop-blur-md sticky top-0 z-50">
@@ -203,53 +344,26 @@ export default function Navbar() {
               StellarMarket
             </span>
           </Link>
-          <div className="hidden md:flex items-center gap-8">
-            <Link
-              href="/jobs"
-              className="text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
-            >
-              <Briefcase size={16} />
-              Jobs
-            </Link>
-            <Link
-              href="/services"
-              className="text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
-            >
-              <Search size={16} />
-              Services
-            </Link>
-            <Link
-              href="/disputes"
-              className="text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
-            >
-              <ShieldCheck size={16} />
-              Disputes
-            </Link>
-            <Link
-              href="/dashboard"
-              className="text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
-            >
-              <LayoutDashboard size={16} />
-              Dashboard
-            </Link>
-            <Link
-              href="/messages"
-              id="messages-nav-link"
-              className="relative text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
-            >
-              <MessageSquare size={16} />
-              Messages
-              <UnreadBadge />
-            </Link>
-            <Link
-              href="/post-job"
-              className="text-theme-text hover:text-theme-heading transition-colors flex items-center gap-2"
-            >
-              <PenLine size={16} />
-              Post a Job
-            </Link>
+          <div className="hidden md:flex items-center gap-6">
+            {navLinks.filter(l => !l.hide).map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                id={link.id}
+                className={`transition-colors flex items-center gap-2 text-sm font-medium ${
+                  isActive(link.href)
+                    ? "text-stellar-blue"
+                    : "text-theme-text hover:text-theme-heading"
+                }`}
+              >
+                <link.icon size={16} />
+                {link.label}
+                {link.href === "/messages" && <UnreadBadge />}
+              </Link>
+            ))}
             <NotificationBell />
             <ThemeToggleButton />
+            <WalletBalanceDisplay />
             <UserMenu />
           </div>
 
@@ -261,59 +375,68 @@ export default function Navbar() {
           </button>
         </div>
 
-        {mobileOpen && (
-          <div className="md:hidden pb-4 flex flex-col gap-4">
-            <Link
-              href="/jobs"
-              className="text-theme-text hover:text-theme-heading flex items-center gap-2"
-            >
-              <Briefcase size={18} /> Jobs
-            </Link>
-            <Link
-              href="/services"
-              className="text-theme-text hover:text-theme-heading flex items-center gap-2"
-            >
-              <Search size={18} /> Services
-            </Link>
-            <Link
-              href="/disputes"
-              className="text-theme-text hover:text-theme-heading flex items-center gap-2"
-            >
-              <ShieldCheck size={18} /> Disputes
-            </Link>
-            <Link
-              href="/dashboard"
-              className="text-theme-text hover:text-theme-heading flex items-center gap-2"
-            >
-              <LayoutDashboard size={18} /> Dashboard
-            </Link>
-            <Link
-              href="/messages"
-              className="relative text-theme-text hover:text-theme-heading flex items-center gap-2"
-            >
-              <MessageSquare size={18} />
-              Messages
-              <UnreadBadge />
-            </Link>
-            <Link
-              href="/post-job"
-              className="text-theme-text hover:text-theme-heading flex items-center gap-2"
-            >
-              <PenLine size={18} /> Post a Job
-            </Link>
-            <div className="pt-4 border-t border-theme-border flex items-center justify-between px-2">
-              <div className="flex items-center gap-4">
-                <span className="text-sm font-medium text-theme-text">Notifications</span>
-                <NotificationBell />
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="text-sm font-medium text-theme-text">Theme</span>
-                <ThemeToggleButton />
+        {/* Mobile Drawer */}
+        <div
+          className={`fixed inset-0 z-50 md:hidden transition-opacity duration-300 ${
+            mobileOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"
+          }`}
+        >
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setMobileOpen(false)}
+          />
+          
+          {/* Panel */}
+          <div
+            className={`absolute right-0 top-0 h-full w-72 bg-theme-bg border-l border-theme-border p-6 shadow-2xl transition-transform duration-300 ease-in-out ${
+              mobileOpen ? "translate-x-0" : "translate-x-full"
+            }`}
+          >
+            {/* Close Button */}
+            <div className="flex justify-between items-center mb-10">
+              <span className="text-lg font-bold text-theme-heading">Menu</span>
+              <button onClick={() => setMobileOpen(false)} className="p-2 text-theme-text hover:text-theme-heading">
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="flex flex-col gap-2">
+              {navLinks.filter(l => !l.hide).map((link) => (
+                <Link
+                  key={link.href}
+                  href={link.href}
+                  onClick={() => setMobileOpen(false)}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+                    isActive(link.href)
+                      ? "bg-stellar-blue/10 text-stellar-blue font-bold shadow-sm"
+                      : "text-theme-text hover:bg-theme-border/30"
+                  }`}
+                >
+                  <link.icon size={20} />
+                  <span>{link.label}</span>
+                  {link.href === "/messages" && <UnreadBadge />}
+                </Link>
+              ))}
+            </div>
+
+            <div className="mt-auto pt-8 border-t border-theme-border">
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between px-4">
+                  <span className="text-sm font-medium text-theme-text">Notifications</span>
+                  <NotificationBell />
+                </div>
+                <div className="flex items-center justify-between px-4">
+                  <span className="text-sm font-medium text-theme-text">Theme</span>
+                  <ThemeToggleButton />
+                </div>
+                <div className="mt-4">
+                  <UserMenu className="w-full justify-between" />
+                </div>
               </div>
             </div>
-            <UserMenu className="w-fit" />
           </div>
-        )}
+        </div>
       </div>
     </nav>
   );

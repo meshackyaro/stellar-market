@@ -40,14 +40,17 @@ export default function DisputeDetailPage() {
 
   useEffect(() => {
     fetchDispute();
-    
-    // Fallback polling for real-time updates since full socket wiring might need extensive backend changes
-    const interval = setInterval(() => {
-        fetchDispute();
-    }, 5000);
-    
-    return () => clearInterval(interval);
   }, [fetchDispute]);
+
+  useEffect(() => {
+    const isResolved =
+      dispute?.status === "RESOLVED_CLIENT" ||
+      dispute?.status === "RESOLVED_FREELANCER";
+    if (!dispute || isResolved) return;
+
+    const interval = setInterval(fetchDispute, 5000);
+    return () => clearInterval(interval);
+  }, [dispute?.status, fetchDispute]);
 
   const handleVote = async (e: React.FormEvent) => {
     e.preventDefault();

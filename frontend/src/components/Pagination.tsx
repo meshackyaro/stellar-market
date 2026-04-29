@@ -23,7 +23,11 @@ export default function Pagination({ page, totalPages, total, limit, onPageChang
       </p>
       <div className="flex items-center gap-2">
         <button
-          onClick={() => onPageChange(page - 1)}
+          onClick={() => {
+            if (page > 1) {
+              onPageChange(page - 1);
+            }
+          }}
           disabled={page <= 1}
           className="p-2 rounded-lg border border-theme-border text-theme-text hover:border-stellar-blue disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
@@ -33,7 +37,11 @@ export default function Pagination({ page, totalPages, total, limit, onPageChang
           Page {page} of {totalPages}
         </span>
         <button
-          onClick={() => onPageChange(page + 1)}
+          onClick={() => {
+            if (page < totalPages) {
+              onPageChange(page + 1);
+            }
+          }}
           disabled={page >= totalPages}
           className="p-2 rounded-lg border border-theme-border text-theme-text hover:border-stellar-blue disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >

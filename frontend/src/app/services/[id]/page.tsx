@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Star, Tag, Clock, ChevronLeft, MessageSquare, ShieldCheck } from "lucide-react";
 import axios from "axios";
 import { ServiceListing } from "@/types";
+import ShareMenu from "@/components/ShareMenu";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
@@ -80,6 +81,11 @@ export default function ServiceDetailPage() {
                 <Clock size={18} />
                 <span>Listed on {new Date(service.createdAt).toLocaleDateString()}</span>
               </div>
+              <ShareMenu 
+                title={service.title}
+                url={typeof window !== "undefined" ? window.location.href : ""}
+                description={service.description.slice(0, 140)}
+              />
             </div>
           </div>
 

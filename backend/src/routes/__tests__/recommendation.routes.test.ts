@@ -58,9 +58,10 @@ describe("GET /api/jobs/recommended", () => {
   });
 
   it("returns 403 for non-freelancer users", async () => {
-    prismaMock.user.findUnique.mockResolvedValueOnce({
+    prismaMock.user.findUnique.mockResolvedValue({
       skills: [],
       role: "CLIENT",
+      emailVerified: true,
     });
 
     const res = await request(app)
@@ -74,15 +75,17 @@ describe("GET /api/jobs/recommended", () => {
   it("returns paginated recommendations for a freelancer", async () => {
     const now = new Date();
 
-    prismaMock.user.findUnique.mockResolvedValueOnce({
+    prismaMock.user.findUnique.mockResolvedValue({
       skills: ["React", "TypeScript"],
       role: "FREELANCER",
+      emailVerified: true,
     });
 
     // No completed jobs
     prismaMock.job.findMany
       .mockResolvedValueOnce([]) // completed jobs query
-      .mockResolvedValueOnce([   // open jobs query
+      .mockResolvedValueOnce([
+        // open jobs query
         {
           id: "job-1",
           title: "React Developer Needed",
@@ -154,18 +157,19 @@ describe("GET /api/jobs/recommended", () => {
     // Job with React+TypeScript overlap should be ranked first
     expect(res.body.data[0].id).toBe("job-1");
     expect(res.body.data[0].relevanceScore).toBeGreaterThan(
-      res.body.data[1].relevanceScore
+      res.body.data[1].relevanceScore,
     );
   });
 
   it("returns empty results when no jobs match", async () => {
-    prismaMock.user.findUnique.mockResolvedValueOnce({
+    prismaMock.user.findUnique.mockResolvedValue({
       skills: ["React"],
       role: "FREELANCER",
+      emailVerified: true,
     });
 
     prismaMock.job.findMany
-      .mockResolvedValueOnce([])  // completed jobs
+      .mockResolvedValueOnce([]) // completed jobs
       .mockResolvedValueOnce([]); // open jobs
 
     prismaMock.application.findMany.mockResolvedValueOnce([]);
@@ -180,14 +184,13 @@ describe("GET /api/jobs/recommended", () => {
   });
 
   it("respects pagination parameters", async () => {
-    prismaMock.user.findUnique.mockResolvedValueOnce({
+    prismaMock.user.findUnique.mockResolvedValue({
       skills: ["React"],
       role: "FREELANCER",
+      emailVerified: true,
     });
 
-    prismaMock.job.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    prismaMock.job.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     prismaMock.application.findMany.mockResolvedValueOnce([]);
 

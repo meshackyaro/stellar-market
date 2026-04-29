@@ -1,9 +1,9 @@
 import { PrismaClient } from "@prisma/client";
-import {
-  getRedisClient,
-  RECOMMENDATION_CACHE_PREFIX,
-  RECOMMENDATION_CACHE_TTL,
-} from "../config/redis";
+import { 
+  cache,
+  generateRecommendationsCacheKey,
+  invalidateCache
+} from "../lib/cache";
 
 const prisma = new PrismaClient();
 
@@ -113,121 +113,136 @@ export class RecommendationService {
     page: number = 1,
     limit: number = 10
   ) {
-    // Check cache first
-    const redis = getRedisClient();
-    const cacheKey = `${RECOMMENDATION_CACHE_PREFIX}${userId}:${page}:${limit}`;
+    const cacheKey = generateRecommendationsCacheKey(userId, page, limit);
 
-    if (redis) {
-      try {
-        const cached = await redis.get(cacheKey);
-        if (cached) return JSON.parse(cached);
-      } catch {
-        // Cache miss or error — continue to compute
-      }
-    }
-
-    // 1. Fetch freelancer's skills
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { skills: true, role: true },
-    });
-
-    if (!user || user.role !== "FREELANCER") {
-      return null;
-    }
-
-    // 2. Get categories from freelancer's completed jobs
-    const completedJobs = await prisma.job.findMany({
-      where: { freelancerId: userId, status: "COMPLETED" },
-      select: { category: true },
-    });
-    const completedCategories = [
-      ...new Set(completedJobs.map((j) => j.category)),
-    ];
-
-    // 3. Get job IDs the freelancer already applied to (to exclude)
-    const appliedApplications = await prisma.application.findMany({
-      where: { freelancerId: userId },
-      select: { jobId: true },
-    });
-    const appliedJobIds = appliedApplications.map((a) => a.jobId);
-
-    // 4. Fetch all open, unflagged jobs (excluding own and already applied)
-    const openJobs = await prisma.job.findMany({
-      where: {
-        status: "OPEN",
-        isFlagged: false,
-        clientId: { not: userId },
-        id: { notIn: appliedJobIds.length > 0 ? appliedJobIds : undefined },
-      },
-      include: {
-        client: {
-          select: {
-            id: true,
-            username: true,
-            avatarUrl: true,
-            reviewsReceived: { select: { rating: true } },
-          },
-        },
-        freelancer: { select: { id: true, username: true, avatarUrl: true } },
-        milestones: true,
-        _count: { select: { applications: true } },
-      },
-    });
-
-    // 5. Score and sort
-    const now = new Date();
-    const scoredJobs = openJobs.map((job) => {
-      const clientReviews = job.client.reviewsReceived || [];
-      const clientAvgRating =
-        clientReviews.length > 0
-          ? clientReviews.reduce((sum, r) => sum + r.rating, 0) /
-            clientReviews.length
-          : 0;
-
-      const relevanceScore = computeRelevanceScore({
-        freelancerSkills: user.skills,
-        jobSkills: job.skills,
-        jobCategory: job.category,
-        completedCategories,
-        jobCreatedAt: job.createdAt,
-        clientAverageRating: clientAvgRating,
-        now,
+    const { data, hit } = await cache(cacheKey, 60, async () => {
+      // 1. Fetch freelancer's skills
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { skills: true, role: true },
       });
 
-      // Strip reviewsReceived from client in the response
-      const { reviewsReceived, ...clientData } = job.client as any;
+      if (!user || user.role !== "FREELANCER") {
+        return null;
+      }
+
+      // 2. Get categories from freelancer's completed jobs
+      const completedJobs = await prisma.job.findMany({
+        where: { freelancerId: userId, status: "COMPLETED" },
+        select: { category: true },
+      });
+      const completedCategories = [
+        ...new Set(completedJobs.map((j) => j.category)),
+      ];
+
+      // 3. Get job IDs the freelancer already applied to (to exclude)
+      const appliedApplications = await prisma.application.findMany({
+        where: { freelancerId: userId },
+        select: { jobId: true },
+      });
+      const appliedJobIds = appliedApplications.map((a) => a.jobId);
+
+      // 4. Fetch all open, unflagged jobs (excluding own and already applied)
+      const openJobs = await prisma.job.findMany({
+        where: {
+          status: "OPEN",
+          isFlagged: false,
+          clientId: { not: userId },
+          id: { notIn: appliedJobIds.length > 0 ? appliedJobIds : undefined },
+        },
+        include: {
+          client: {
+            select: {
+              id: true,
+              username: true,
+              avatarUrl: true,
+              reviewsReceived: { select: { rating: true } },
+            },
+          },
+          freelancer: { select: { id: true, username: true, avatarUrl: true } },
+          milestones: true,
+          _count: { select: { applications: true } },
+        },
+      });
+
+      // 5. Score and sort
+      const now = new Date();
+      const scoredJobs = openJobs.map((job) => {
+        const clientReviews = job.client.reviewsReceived || [];
+        const clientAvgRating =
+          clientReviews.length > 0
+            ? clientReviews.reduce((sum, r) => sum + r.rating, 0) /
+              clientReviews.length
+            : 0;
+
+        const relevanceScore = computeRelevanceScore({
+          freelancerSkills: user.skills,
+          jobSkills: job.skills,
+          jobCategory: job.category,
+          completedCategories,
+          jobCreatedAt: job.createdAt,
+          clientAverageRating: clientAvgRating,
+          now,
+        });
+
+        // Strip reviewsReceived from client in the response
+        const { reviewsReceived, ...clientData } = job.client as any;
+
+        return {
+          ...job,
+          client: clientData,
+          relevanceScore: Math.round(relevanceScore * 1000) / 1000,
+        };
+      });
+
+      scoredJobs.sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+      // 6. Paginate
+      const total = scoredJobs.length;
+      const skip = (page - 1) * limit;
+      const paginatedJobs = scoredJobs.slice(skip, skip + limit);
 
       return {
-        ...job,
-        client: clientData,
-        relevanceScore: Math.round(relevanceScore * 1000) / 1000,
+        data: paginatedJobs,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
       };
     });
 
-    scoredJobs.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    return data;
+  }
 
-    // 6. Paginate
-    const total = scoredJobs.length;
-    const skip = (page - 1) * limit;
-    const paginatedJobs = scoredJobs.slice(skip, skip + limit);
+  static async rebuildRecommendationsForJob(jobId: string): Promise<void> {
+    const job = await prisma.job.findUnique({
+      where: { id: jobId },
+      select: { id: true, status: true, deletedAt: true },
+    });
 
-    const result = {
-      data: paginatedJobs,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-    };
-
-    // Cache the result
-    if (redis) {
-      try {
-        await redis.setex(cacheKey, RECOMMENDATION_CACHE_TTL, JSON.stringify(result));
-      } catch {
-        // Cache write failure is non-critical
-      }
+    if (!job || job.deletedAt || job.status !== "OPEN") {
+      await invalidateCache("recommendations:*");
+      return;
     }
 
-    return result;
+    await invalidateCache("recommendations:*");
+
+    const freelancers = await prisma.user.findMany({
+      where: {
+        role: "FREELANCER",
+        emailVerified: true,
+      },
+      select: { id: true },
+    });
+
+    for (const freelancer of freelancers) {
+      await RecommendationService.getRecommendedJobs(freelancer.id, 1, 10);
+    }
+  }
+
+  /**
+   * Invalidate recommendation cache for a user when they apply to a job
+   */
+  static async invalidateUserRecommendations(userId: string) {
+    await invalidateCache(`recommendations:${userId}:*`);
   }
 }

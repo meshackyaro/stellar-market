@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { logger } from "./logger";
 
 class RedisClient {
   private static instance: Redis;
@@ -21,22 +22,22 @@ class RedisClient {
       });
 
       RedisClient.instance.on("connect", () => {
-        console.log("Redis connected successfully");
+        logger.info("Redis connected successfully");
         RedisClient.isConnected = true;
       });
 
       RedisClient.instance.on("error", (err) => {
-        console.error("Redis connection error:", err);
+        logger.error({ err }, "Redis connection error");
         RedisClient.isConnected = false;
       });
 
       RedisClient.instance.on("close", () => {
-        console.log("Redis connection closed");
+        logger.info("Redis connection closed");
         RedisClient.isConnected = false;
       });
 
       RedisClient.instance.on("reconnecting", () => {
-        console.log("Redis reconnecting...");
+        logger.warn("Redis reconnecting...");
       });
     }
 

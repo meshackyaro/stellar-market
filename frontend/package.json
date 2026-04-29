@@ -10,20 +10,27 @@
     "test": "jest --runInBand"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.2.2",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^12.3.0",
+    "@testing-library/dom": "^10.4.1",
     "@uiw/react-md-editor": "^4.0.11",
     "autoprefixer": "^10.4.20",
     "axios": "^1.7.9",
     "lucide-react": "^0.468.0",
-    "next": "14.2.21",
+    "next": "^16.2.1",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-hook-form": "^7.73.1",
+    "recharts": "^3.8.1",
     "socket.io-client": "^4.8.3",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@swc/cli": "^0.8.0",
+    "@swc/core": "^1.15.21",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",

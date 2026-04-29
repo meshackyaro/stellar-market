@@ -3,6 +3,7 @@ export interface User {
   walletAddress: string;
   username: string;
   email?: string;
+  emailVerified?: boolean;
   bio?: string;
   avatarUrl?: string;
   role: "CLIENT" | "FREELANCER";
@@ -10,6 +11,13 @@ export interface User {
   skills?: string[];
   averageRating?: number;
   reviewCount?: number;
+  availability?: boolean;
+  completedOnboarding?: boolean;
+  reputation?: {
+    totalScore: string;
+    totalWeight: string;
+    reviewCount: number;
+  };
 }
 
 export interface Milestone {
@@ -18,10 +26,26 @@ export interface Milestone {
   title: string;
   description: string;
   amount: number;
-  status: "PENDING" | "IN_PROGRESS" | "SUBMITTED" | "APPROVED" | "REJECTED";
+  status: "PENDING" | "IN_PROGRESS" | "SUBMITTED" | "APPROVED" | "REJECTED" | "PARTIALLY_PAID";
   order: number;
   onChainIndex?: number;
   contractDeadline?: string;
+}
+
+export interface RevisionProposalMilestone {
+  id: number;
+  description: string;
+  amountStroops: string;
+  deadline: number;
+  status: string;
+}
+
+export interface RevisionProposal {
+  proposer: string;
+  status: "PENDING" | "ACCEPTED" | "REJECTED";
+  newTotalStroops: string;
+  milestones: RevisionProposalMilestone[];
+  createdAt: number;
 }
 
 export interface Job {
@@ -38,7 +62,10 @@ export interface Job {
   milestones: Milestone[];
   contractJobId?: string;
   escrowStatus: "UNFUNDED" | "FUNDED" | "COMPLETED" | "CANCELLED" | "DISPUTED";
+  revisionProposal?: RevisionProposal | null;
+  imageUrl?: string;
   createdAt: string;
+  updatedAt?: string;
   _count?: { applications: number };
 }
 

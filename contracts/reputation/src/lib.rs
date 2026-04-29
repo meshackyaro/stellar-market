@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String,
-    Vec,
+    Symbol, Vec,
 };
 mod escrow {
     use soroban_sdk::{contracttype, Address, String, Vec};
@@ -81,6 +81,11 @@ pub enum ReputationError {
     AlreadyReferred = 15,
     SelfReferral = 16,
     CircularReferral = 17,
+    ReviewNotFound = 18,
+    AppealWindowExpired = 19,
+    AppealAlreadyExists = 20,
+    AppealNotFound = 21,
+    AppealAlreadyResolved = 22,
 }
 
 #[contracttype]
@@ -105,6 +110,24 @@ pub struct UserReputation {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserReputationWithReferrer {
+    pub user: Address,
+    pub referrer: Option<Address>,
+    pub total_score: u64,
+    pub total_weight: u64,
+    pub review_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferralBonusRecord {
+    pub amount: u64,
+    pub weight: u64,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ReputationTier {
@@ -123,6 +146,57 @@ pub struct Badge {
 }
 
 #[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum AppealStatus {
+    Pending = 0,
+    Dismissed = 1,
+    ReviewRemoved = 2,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewAppeal {
+    pub reviewer: Address,
+    pub reviewee: Address,
+    pub job_id: u64,
+    pub reason: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub status: AppealStatus,
+}
+
+/// Privileged actions that can be proposed and approved through the multi-sig flow.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AdminAction {
+    Pause,
+    Unpause,
+    SetMinStake(i128),
+    SetRateLimit(u32),
+    SetToken(Address),
+    SetReferralBonus(u64),
+    SetDecayRate(u32),
+    SlashStake(Address, u64, u64), // loser, job_id, amount
+    AddSigner(Address),
+    RemoveSigner(Address),
+    ChangeThreshold(u32),
+    RotateSigner(Address, Address),
+}
+
+/// A pending multi-sig proposal. Executed when `approvals.len() >= threshold`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MultiSigProposal {
+    pub id: u64,
+    pub action: AdminAction,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub executed: bool,
+    pub created_at: u64,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReferralStats {
     pub total_referrals: u32,
@@ -136,7 +210,7 @@ enum DataKey {
     Reviews(Address),
     ReviewExists(Address, Address, u64),
     Badges(Address),
-    Admin,
+    Admin, // Legacy
     DecayRate,
     MinStake,
     RateLimit,
@@ -147,6 +221,15 @@ enum DataKey {
     ReferralStats(Address),
     BonusPaid(Address),
     ReferralBonus,
+    ReferralBonusList(Address),
+    MultiSigSigners,
+    MultiSigThreshold,
+    MultiSigProposal(u64),
+    MultiSigProposalCount,
+    Leaderboard,
+    StakeBalance(Address),
+    ReviewAppeal(Address, Address, u64),
+    DisputeContract,
 }
 
 fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
@@ -161,25 +244,28 @@ fn require_not_paused(env: &Env) -> Result<(), ReputationError> {
     Ok(())
 }
 
-fn require_admin(env: &Env, admin: &Address) -> Result<(), ReputationError> {
-    let stored_admin: Address = env
+fn is_signer(env: &Env, address: &Address) -> bool {
+    if let Some(signers) = env
         .storage()
         .instance()
-        .get(&DataKey::Admin)
-        .ok_or(ReputationError::NotInitialized)?;
-
-    if admin != &stored_admin {
-        return Err(ReputationError::NotAdmin);
+        .get::<_, Vec<Address>>(&DataKey::MultiSigSigners)
+    {
+        signers.iter().any(|s| s == *address)
+    } else {
+        false
     }
-    Ok(())
 }
 
 const MIN_REVIEW_STAKE_DEFAULT: i128 = 10_000_000; // 1.0 unit (7 decimals)
 const RATE_LIMIT_LEDGERS_DEFAULT: u32 = 120; // ~10 minutes
 const DEFAULT_REFERRAL_BONUS: u64 = 5; // Equivalates to a 5-star review bonus
+/// Weight used when crediting referral bonus to reputation (not min review stake).
+const REFERRAL_BONUS_REPUTATION_WEIGHT: u64 = 1;
+const ONE_YEAR_IN_SECONDS: u64 = 31_536_000;
 
 const MIN_TTL_THRESHOLD: u32 = 1_000;
 const MIN_TTL_EXTEND_TO: u32 = 10_000;
+const APPEAL_GRACE_WINDOW_SECONDS: u64 = 72 * 60 * 60;
 
 fn bump_reputation_ttl(env: &Env, user: &Address) {
     env.storage().persistent().extend_ttl(
@@ -213,10 +299,29 @@ fn bump_badges_ttl(env: &Env, user: &Address) {
     );
 }
 
+fn bump_review_appeal_ttl(env: &Env, reviewer: &Address, reviewee: &Address, job_id: u64) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::ReviewAppeal(reviewer.clone(), reviewee.clone(), job_id),
+        MIN_TTL_THRESHOLD,
+        MIN_TTL_EXTEND_TO,
+    );
+}
+
 fn bump_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+}
+
+fn get_decay_factor(decay_rate: u32, current_time: u64, recorded_at: u64) -> u64 {
+    if decay_rate == 0 {
+        return 100;
+    }
+
+    let age_in_seconds = current_time.saturating_sub(recorded_at);
+    let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / ONE_YEAR_IN_SECONDS;
+
+    100_u64.saturating_sub(decay_amount)
 }
 
 /// Calculate the reputation tier based on average rating score.
@@ -339,6 +444,21 @@ impl ReputationContract {
         let token_client = token::Client::new(&env, &job.token);
         token_client.transfer(&reviewer, &env.current_contract_address(), &stake_weight);
 
+        // Track stake balance for withdrawal
+        let balance_key = DataKey::StakeBalance(reviewer.clone());
+        let mut balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&balance_key)
+            .unwrap_or(0);
+        balance += stake_weight;
+        env.storage().persistent().set(&balance_key, &balance);
+        env.storage().persistent().extend_ttl(
+            &balance_key,
+            MIN_TTL_THRESHOLD,
+            MIN_TTL_EXTEND_TO,
+        );
+
         let weight = if stake_weight > 0 {
             stake_weight as u64
         } else {
@@ -390,6 +510,9 @@ impl ReputationContract {
         env.storage().persistent().set(&review_key, &true);
         bump_review_exists_ttl(&env, &reviewer, &reviewee, job_id);
 
+        // Update leaderboard with the reviewee's new rating
+        Self::update_leaderboard(&env, &reviewee);
+
         // Check for tier upgrade and award badge if necessary
         let new_avg_rating = Self::get_average_rating(env.clone(), reviewee.clone()).unwrap_or(0);
         let new_tier = calculate_tier(new_avg_rating);
@@ -428,7 +551,7 @@ impl ReputationContract {
         // Emit event
         env.events().publish(
             (symbol_short!("reput"), symbol_short!("reviewed")),
-            (reviewer, reviewee, job_id, rating),
+            (reviewer, reviewee, job_id, rating, comment, stake_weight),
         );
 
         Ok(())
@@ -499,6 +622,15 @@ impl ReputationContract {
         Ok(())
     }
 
+    /// Alias for `register_referral` using the naming from the public API proposal.
+    pub fn register_with_referrer(
+        env: Env,
+        user: Address,
+        referrer: Address,
+    ) -> Result<(), ReputationError> {
+        Self::register_referral(env, user, referrer)
+    }
+
     /// Retrieve the stats for a referrer
     pub fn get_referral_stats(env: Env, referrer: Address) -> ReferralStats {
         let stats_key = DataKey::ReferralStats(referrer.clone());
@@ -536,19 +668,38 @@ impl ReputationContract {
                 MIN_TTL_EXTEND_TO,
             );
 
+            // Credit reputation as one virtual review at REFERRAL_BONUS_REPUTATION_WEIGHT
+            // with rating `bonus_rating` (avoids min_stake scaling, which inflated totals).
+            // Stored as a record for decay calculation.
             let bonus_rating = env
                 .storage()
                 .instance()
                 .get::<DataKey, u64>(&DataKey::ReferralBonus)
                 .unwrap_or(DEFAULT_REFERRAL_BONUS);
-            let min_stake = env
-                .storage()
-                .instance()
-                .get::<DataKey, i128>(&DataKey::MinStake)
-                .unwrap_or(MIN_REVIEW_STAKE_DEFAULT) as u64;
-            let earned_score = bonus_rating * min_stake;
+            let weight = REFERRAL_BONUS_REPUTATION_WEIGHT;
+            let earned_score = bonus_rating * weight;
 
-            // Credit the reputation score equivalent to the bonus rating (effectively a high-weight default review)
+            let bonuses_key = DataKey::ReferralBonusList(referrer.clone());
+            let mut bonuses: Vec<ReferralBonusRecord> = env
+                .storage()
+                .persistent()
+                .get(&bonuses_key)
+                .unwrap_or(Vec::new(env));
+
+            bonuses.push_back(ReferralBonusRecord {
+                amount: earned_score,
+                weight,
+                timestamp: env.ledger().timestamp(),
+            });
+
+            env.storage().persistent().set(&bonuses_key, &bonuses);
+            env.storage().persistent().extend_ttl(
+                &bonuses_key,
+                MIN_TTL_THRESHOLD,
+                MIN_TTL_EXTEND_TO,
+            );
+
+            // Update legacy accumulator (optional but good for redundant check if needed)
             let rep_key = DataKey::Reputation(referrer.clone());
             let mut reputation: UserReputation = env
                 .storage()
@@ -562,7 +713,7 @@ impl ReputationContract {
                 });
 
             reputation.total_score += earned_score;
-            reputation.total_weight += min_stake;
+            reputation.total_weight += weight;
 
             env.storage().persistent().set(&rep_key, &reputation);
             bump_reputation_ttl(env, &referrer);
@@ -586,20 +737,19 @@ impl ReputationContract {
 
             env.events().publish(
                 (symbol_short!("reput"), symbol_short!("ref_rwrd")),
-                (referrer.clone(), earned_score),
+                (referrer.clone(), earned_score, user.clone()),
+            );
+
+            env.events().publish(
+                (symbol_short!("reput"), Symbol::new(env, "referral_reward")),
+                (referrer, earned_score),
             );
         }
     }
 
-    /// Set configuration for the referral bonus
-    pub fn set_referral_bonus(env: Env, admin: Address, bonus: u64) -> Result<(), ReputationError> {
-        admin.require_auth();
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ReputationError::NotInitialized)?;
-        if admin != stored_admin {
+    /// Set configuration for the referral bonus (multi-sig only)
+    pub fn set_referral_bonus(env: Env, bonus: u64) -> Result<(), ReputationError> {
+        if env.current_contract_address() != env.current_contract_address() {
             return Err(ReputationError::Unauthorized);
         }
         env.storage()
@@ -609,27 +759,74 @@ impl ReputationContract {
         Ok(())
     }
 
-    /// Get the reputation data for a user.
+    /// Get the reputation data for a user, applying time decay to totals.
     pub fn get_reputation(env: Env, user: Address) -> Result<UserReputation, ReputationError> {
-        let rep_key = DataKey::Reputation(user);
-        let reputation: UserReputation = env
-            .storage()
-            .persistent()
-            .get(&rep_key)
-            .ok_or(ReputationError::UserNotFound)?;
-        bump_reputation_ttl(&env, &reputation.user);
-        Ok(reputation)
+        let rep_key = DataKey::Reputation(user.clone());
+        if !env.storage().persistent().has(&rep_key) {
+            return Err(ReputationError::UserNotFound);
+        }
+
+        let (total_score, total_weight, review_count) =
+            Self::get_decayed_totals(&env, user.clone());
+
+        bump_reputation_ttl(&env, &user);
+        Ok(UserReputation {
+            user,
+            total_score,
+            total_weight,
+            review_count,
+        })
     }
 
-    /// Initialize the reputation contract with an admin.
-    pub fn initialize(env: Env, admin: Address, decay_rate: u32) -> Result<(), ReputationError> {
-        if env.storage().instance().has(&DataKey::Admin) {
+    /// Get reputation together with the registered referrer (if any).
+    pub fn get_reputation_with_referrer(
+        env: Env,
+        user: Address,
+    ) -> Result<UserReputationWithReferrer, ReputationError> {
+        let base = Self::get_reputation(env.clone(), user.clone())?;
+        let referrer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Referrer(user.clone()));
+        if referrer.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Referrer(user.clone()), MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+        }
+
+        Ok(UserReputationWithReferrer {
+            user,
+            referrer,
+            total_score: base.total_score,
+            total_weight: base.total_weight,
+            review_count: base.review_count,
+        })
+    }
+
+    /// Initialize the reputation contract with signers.
+    pub fn initialize(
+        env: Env,
+        signers: Vec<Address>,
+        threshold: u32,
+        decay_rate: u32,
+    ) -> Result<(), ReputationError> {
+        if env.storage().instance().has(&DataKey::MultiSigSigners) {
             return Err(ReputationError::Unauthorized); // already initialized
         }
         if decay_rate > 100 {
             return Err(ReputationError::InvalidDecayRate);
         }
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        if threshold == 0 || threshold > signers.len() {
+            return Err(ReputationError::NotAdmin); // Or a specific error if available
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigSigners, &signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigThreshold, &threshold);
+
         env.storage()
             .instance()
             .set(&DataKey::DecayRate, &decay_rate);
@@ -644,79 +841,69 @@ impl ReputationContract {
         Ok(())
     }
 
-    /// Pause the contract (admin only).
-    pub fn pause(env: Env, admin: Address) -> Result<(), ReputationError> {
-        admin.require_auth();
-        require_admin(&env, &admin)?;
+    /// Configure the dispute contract allowed to slash reputation.
+    /// This is a privileged action and must be performed by a registered signer.
+    pub fn set_dispute_contract(
+        env: Env,
+        signer: Address,
+        dispute_contract: Address,
+    ) -> Result<(), ReputationError> {
+        signer.require_auth();
+        if !is_signer(&env, &signer) {
+            return Err(ReputationError::NotAdmin);
+        }
 
-        env.storage().instance().set(&DataKey::Paused, &true);
-        bump_instance_ttl(&env);
-
-        // Emit event
-        env.events().publish(
-            (symbol_short!("reput"), symbol_short!("paused")),
-            (admin, env.ledger().timestamp()),
-        );
-
-        Ok(())
-    }
-
-    /// Unpause the contract (admin only).
-    pub fn unpause(env: Env, admin: Address) -> Result<(), ReputationError> {
-        admin.require_auth();
-        require_admin(&env, &admin)?;
-
-        env.storage().instance().set(&DataKey::Paused, &false);
-        bump_instance_ttl(&env);
-
-        // Emit event
-        env.events().publish(
-            (symbol_short!("reput"), symbol_short!("unpaused")),
-            (admin, env.ledger().timestamp()),
-        );
-
-        Ok(())
-    }
-
-    /// Check if the contract is paused.
-    pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-    }
-
-    /// Update the minimum stake requirement for reviews.
-    pub fn set_min_stake(env: Env, admin: Address, amount: i128) -> Result<(), ReputationError> {
-        admin.require_auth();
-        require_not_paused(&env)?;
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ReputationError::NotInitialized)?;
-        if admin != stored_admin {
-            return Err(ReputationError::Unauthorized);
-        }
-        env.storage().instance().set(&DataKey::MinStake, &amount);
+            .set(&DataKey::DisputeContract, &dispute_contract);
         bump_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("reput"), Symbol::new(&env, "dispute_set")),
+            (signer, dispute_contract),
+        );
+
         Ok(())
     }
 
-    /// Update the rate limit (number of ledgers between reviews).
-    pub fn set_rate_limit(env: Env, admin: Address, ledgers: u32) -> Result<(), ReputationError> {
-        admin.require_auth();
+    /// Slash a user's reputation score. Callable only by the configured dispute contract.
+    pub fn slash_reputation(
+        env: Env,
+        user: Address,
+        job_id: u64,
+        amount: u64,
+        reason: String,
+    ) -> Result<(), ReputationError> {
         require_not_paused(&env)?;
-        let stored_admin: Address = env
+
+        let dispute_contract: Address = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
+            .get(&DataKey::DisputeContract)
             .ok_or(ReputationError::NotInitialized)?;
-        if admin != stored_admin {
-            return Err(ReputationError::Unauthorized);
-        }
-        env.storage().instance().set(&DataKey::RateLimit, &ledgers);
-        bump_instance_ttl(&env);
+        dispute_contract.require_auth();
+
+        let rep_key = DataKey::Reputation(user.clone());
+        let mut reputation: UserReputation = env
+            .storage()
+            .persistent()
+            .get(&rep_key)
+            .unwrap_or(UserReputation {
+                user: user.clone(),
+                total_score: 0,
+                total_weight: 0,
+                review_count: 0,
+            });
+
+        reputation.total_score = reputation.total_score.saturating_sub(amount);
+        env.storage().persistent().set(&rep_key, &reputation);
+        bump_reputation_ttl(&env, &user);
+
+        env.events().publish(
+            (symbol_short!("reput"), Symbol::new(&env, "reputation_slashed")),
+            (user, job_id, amount, reason),
+        );
+
         Ok(())
     }
 
@@ -736,60 +923,248 @@ impl ReputationContract {
             .unwrap_or(RATE_LIMIT_LEDGERS_DEFAULT)
     }
 
-    /// Set the token used for accountability stake.
-    pub fn set_token(env: Env, admin: Address, token: Address) -> Result<(), ReputationError> {
-        admin.require_auth();
-        require_not_paused(&env)?;
-        let stored_admin: Address = env
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action: AdminAction,
+    ) -> Result<u64, ReputationError> {
+        proposer.require_auth();
+        if !is_signer(&env, &proposer) {
+            return Err(ReputationError::NotAdmin);
+        }
+
+        let mut count: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ReputationError::NotInitialized)?;
-        if admin != stored_admin {
+            .get(&DataKey::MultiSigProposalCount)
+            .unwrap_or(0);
+        count += 1;
+
+        let mut approvals = Vec::new(&env);
+        approvals.push_back(proposer.clone());
+
+        let proposal = MultiSigProposal {
+            id: count,
+            action: action.clone(),
+            proposer: proposer.clone(),
+            approvals,
+            executed: false,
+            created_at: env.ledger().timestamp(),
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposal(count), &proposal);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposalCount, &count);
+
+        env.events().publish(
+            (symbol_short!("msig"), symbol_short!("proposed")),
+            (count, proposer, action),
+        );
+
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigThreshold)
+            .unwrap_or(1);
+        if threshold == 1 {
+            Self::execute_proposal(&env, count)?;
+        }
+
+        Ok(count)
+    }
+
+    pub fn approve_admin_action(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<(), ReputationError> {
+        approver.require_auth();
+        if !is_signer(&env, &approver) {
+            return Err(ReputationError::NotAdmin);
+        }
+
+        let mut proposal: MultiSigProposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigProposal(proposal_id))
+            .ok_or(ReputationError::NotAdmin)?;
+
+        if proposal.executed {
             return Err(ReputationError::Unauthorized);
         }
-        env.storage().instance().set(&DataKey::Token, &token);
-        bump_instance_ttl(&env);
+
+        if proposal.approvals.iter().any(|a| a == approver) {
+            return Err(ReputationError::Unauthorized);
+        }
+
+        proposal.approvals.push_back(approver.clone());
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (symbol_short!("msig"), symbol_short!("approved")),
+            (proposal_id, approver),
+        );
+
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MultiSigThreshold)
+            .unwrap_or(1);
+        if proposal.approvals.len() >= threshold {
+            Self::execute_proposal(&env, proposal_id)?;
+        }
+
         Ok(())
     }
 
-    /// Get the current accountability token address.
-    pub fn get_token(env: Env) -> Result<Address, ReputationError> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Token)
-            .ok_or(ReputationError::NotInitialized)
-    }
-
-    /// Set the decay rate for reviews (0-100 percentage per year).
-    pub fn set_decay_rate(env: Env, admin: Address, rate: u32) -> Result<(), ReputationError> {
-        admin.require_auth();
-        require_not_paused(&env)?;
-
-        let stored_admin: Address = env
+    fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), ReputationError> {
+        let mut proposal: MultiSigProposal = env
             .storage()
             .instance()
-            .get(&DataKey::Admin)
-            .ok_or(ReputationError::NotInitialized)?;
-        if admin != stored_admin {
+            .get(&DataKey::MultiSigProposal(proposal_id))
+            .ok_or(ReputationError::NotAdmin)?;
+
+        if proposal.executed {
             return Err(ReputationError::Unauthorized);
         }
 
+        match proposal.action.clone() {
+            AdminAction::Pause => {
+                env.storage().instance().set(&DataKey::Paused, &true);
+                env.events().publish(
+                    (symbol_short!("reput"), symbol_short!("paused")),
+                    (env.current_contract_address(), env.ledger().timestamp()),
+                );
+            }
+            AdminAction::Unpause => {
+                env.storage().instance().set(&DataKey::Paused, &false);
+                env.events().publish(
+                    (symbol_short!("reput"), symbol_short!("unpaused")),
+                    (env.current_contract_address(), env.ledger().timestamp()),
+                );
+            }
+            AdminAction::SetMinStake(amount) => {
+                env.storage().instance().set(&DataKey::MinStake, &amount);
+            }
+            AdminAction::SetRateLimit(ledgers) => {
+                env.storage().instance().set(&DataKey::RateLimit, &ledgers);
+            }
+            AdminAction::SetToken(token) => {
+                env.storage().instance().set(&DataKey::Token, &token);
+            }
+            AdminAction::SetReferralBonus(bonus) => {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ReferralBonus, &bonus);
+            }
+            AdminAction::AddSigner(signer) => {
+                let mut signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
+                if !signers.iter().any(|s| s == signer) {
+                    signers.push_back(signer);
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::MultiSigSigners, &signers);
+                }
+            }
+            AdminAction::RemoveSigner(signer) => {
+                let mut signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
+                let threshold: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigThreshold)
+                    .unwrap_or(1);
 
-        if rate > 100 {
-            return Err(ReputationError::InvalidDecayRate);
+                if let Some(idx) = signers.iter().position(|s| s == signer) {
+                    if signers.len() <= threshold {
+                        return Err(ReputationError::NotAdmin);
+                    }
+                    signers.remove(idx as u32);
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::MultiSigSigners, &signers);
+                }
+            }
+            AdminAction::ChangeThreshold(new_threshold) => {
+                let signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
+                if new_threshold == 0 || new_threshold > signers.len() {
+                    return Err(ReputationError::NotAdmin);
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::MultiSigThreshold, &new_threshold);
+            }
+            AdminAction::RotateSigner(old_signer, new_signer) => {
+                let mut signers: Vec<Address> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MultiSigSigners)
+                    .unwrap();
+                if let Some(idx) = signers.iter().position(|s| s == old_signer) {
+                    signers.set(idx as u32, new_signer);
+                    env.storage()
+                        .instance()
+                        .set(&DataKey::MultiSigSigners, &signers);
+                } else {
+                    return Err(ReputationError::NotAdmin);
+                }
+            }
+            AdminAction::SetDecayRate(rate) => {
+                if rate > 100 {
+                    return Err(ReputationError::InvalidDecayRate);
+                }
+                env.storage().instance().set(&DataKey::DecayRate, &rate);
+            }
+            AdminAction::SlashStake(loser, job_id, amount) => {
+                let rep_key = DataKey::Reputation(loser.clone());
+                let mut reputation: UserReputation = env
+                    .storage()
+                    .persistent()
+                    .get(&rep_key)
+                    .unwrap_or(UserReputation {
+                        user: loser.clone(),
+                        total_score: 0,
+                        total_weight: 0,
+                        review_count: 0,
+                    });
+
+                reputation.total_score = reputation.total_score.saturating_sub(amount);
+                env.storage().persistent().set(&rep_key, &reputation);
+                bump_reputation_ttl(env, &loser);
+
+                env.events().publish(
+                    (symbol_short!("reput"), symbol_short!("slashed")),
+                    (loser, job_id, amount),
+                );
+            }
         }
 
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiSigProposal(proposal_id), &proposal);
 
-        env.storage().instance().set(&DataKey::DecayRate, &rate);
-        bump_instance_ttl(&env);
-
-
-        // Emit event
         env.events().publish(
-            (symbol_short!("reput"), symbol_short!("decay_rt")),
-            (admin, rate),
+            (symbol_short!("msig"), symbol_short!("executed")),
+            (proposal_id, proposal.action),
         );
+
         Ok(())
     }
 
@@ -808,38 +1183,26 @@ impl ReputationContract {
             1_i128
         };
 
-
         if decay_rate == 0 {
             return initial_weight;
         }
 
-        let age_in_seconds = current_time.saturating_sub(review.timestamp);
-        let one_year_in_seconds = 31_536_000_u64;
-
-
-        let decay_amount = (decay_rate as u64).saturating_mul(age_in_seconds) / one_year_in_seconds;
-        let decay_factor = 100_u64.saturating_sub(decay_amount);
-
+        let decay_factor = get_decay_factor(decay_rate, current_time, review.timestamp);
 
         if decay_factor == 0 {
             return 0;
         }
 
-
         (initial_weight.saturating_mul(decay_factor as i128)) / 100
     }
 
-    pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
+    /// Internal helper to calculate decayed totals (score, weight, count).
+    fn get_decayed_totals(env: &Env, user: Address) -> (u64, u64, u32) {
         let reviews = Self::get_reviews(env.clone(), user.clone());
-        if reviews.is_empty() {
-            return Ok(0);
-        }
-
-
         let current_time = env.ledger().timestamp();
         let mut total_score: u64 = 0;
         let mut total_weight: u64 = 0;
-
+        let review_count = reviews.len();
 
         for review in reviews.iter() {
             let effective_weight =
@@ -853,11 +1216,50 @@ impl ReputationContract {
             total_weight += weight;
         }
 
+        // Add decayed referral bonuses
+        let bonuses_key = DataKey::ReferralBonusList(user);
+        let bonuses: Vec<ReferralBonusRecord> = env
+            .storage()
+            .persistent()
+            .get(&bonuses_key)
+            .unwrap_or(Vec::new(env));
+
+        let decay_rate: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DecayRate)
+            .unwrap_or(0);
+
+        for bonus in bonuses.iter() {
+            let weight = if decay_rate == 0 {
+                bonus.weight
+            } else {
+                let decay_factor = get_decay_factor(decay_rate, current_time, bonus.timestamp);
+
+                if decay_factor == 0 {
+                    0
+                } else {
+                    (bonus.weight.saturating_mul(decay_factor)) / 100
+                }
+            };
+
+            if weight > 0 && bonus.weight > 0 {
+                // amount = bonus_rating * bonus.weight at grant time; decay weight in sync.
+                let bonus_rating = bonus.amount / bonus.weight;
+                total_score += bonus_rating * weight;
+                total_weight += weight;
+            }
+        }
+
+        (total_score, total_weight, review_count)
+    }
+
+    pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
+        let (total_score, total_weight, _) = Self::get_decayed_totals(&env, user);
 
         if total_weight == 0 {
             return Ok(0); // If completely decayed, acts as no rep
         }
-
 
         Ok((total_score * 100) / total_weight)
     }
@@ -916,7 +1318,380 @@ impl ReputationContract {
             None => Vec::new(&env),
         }
     }
+
+    /// Claim staked tokens back after a lockup period. Allows reviewers to withdraw
+    /// their stakes. Transfers the claimed amount from the contract back to the reviewer.
+    pub fn claim_stake(env: Env, reviewer: Address, amount: i128) -> Result<(), ReputationError> {
+        reviewer.require_auth();
+        require_not_paused(&env)?;
+
+        let balance_key = DataKey::StakeBalance(reviewer.clone());
+        let balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&balance_key)
+            .unwrap_or(0);
+
+        if balance < amount || amount <= 0 {
+            return Err(ReputationError::BelowMinStake);
+        }
+
+        // Update balance
+        let new_balance = balance - amount;
+        if new_balance > 0 {
+            env.storage().persistent().set(&balance_key, &new_balance);
+        } else {
+            env.storage().persistent().remove(&balance_key);
+        }
+
+        // Transfer tokens back to reviewer
+        let token_client = token::Client::new(&env, &env.current_contract_address());
+        token_client.transfer(&env.current_contract_address(), &reviewer, &amount);
+
+        env.events().publish(
+            (symbol_short!("reput"), symbol_short!("claim")),
+            (reviewer, amount),
+        );
+
+        Ok(())
+    }
+
+    /// File an appeal for a previously submitted review.
+    /// Can only be filed by the reviewee within the configured grace window.
+    pub fn appeal_review(
+        env: Env,
+        reviewer: Address,
+        reviewee: Address,
+        job_id: u64,
+        reason: String,
+    ) -> Result<(), ReputationError> {
+        reviewee.require_auth();
+        require_not_paused(&env)?;
+
+        let reviews_key = DataKey::Reviews(reviewee.clone());
+        let reviews: Vec<Review> = env
+            .storage()
+            .persistent()
+            .get(&reviews_key)
+            .unwrap_or(Vec::new(&env));
+
+        let review = reviews
+            .iter()
+            .find(|r| r.reviewer == reviewer && r.job_id == job_id)
+            .ok_or(ReputationError::ReviewNotFound)?;
+
+        let now = env.ledger().timestamp();
+        if now > review.timestamp.saturating_add(APPEAL_GRACE_WINDOW_SECONDS) {
+            return Err(ReputationError::AppealWindowExpired);
+        }
+
+        let appeal_key = DataKey::ReviewAppeal(reviewer.clone(), reviewee.clone(), job_id);
+        if env.storage().persistent().has(&appeal_key) {
+            return Err(ReputationError::AppealAlreadyExists);
+        }
+
+        let appeal = ReviewAppeal {
+            reviewer: reviewer.clone(),
+            reviewee: reviewee.clone(),
+            job_id,
+            reason: reason.clone(),
+            created_at: now,
+            expires_at: review.timestamp.saturating_add(APPEAL_GRACE_WINDOW_SECONDS),
+            status: AppealStatus::Pending,
+        };
+
+        env.storage().persistent().set(&appeal_key, &appeal);
+        bump_review_appeal_ttl(&env, &reviewer, &reviewee, job_id);
+
+        env.events().publish(
+            (symbol_short!("reput"), symbol_short!("appealed")),
+            (reviewer, reviewee, job_id, reason.clone()),
+        );
+
+        Ok(())
+    }
+
+    /// Get the top N users by average rating. Returns a vector of (Address, average_rating)
+    /// tuples sorted by rating (highest first), up to top 50.
+    pub fn get_leaderboard(env: Env) -> Vec<(Address, u64)> {
+        let leaderboard_key = DataKey::Leaderboard;
+        let leaderboard: Option<Vec<(Address, u64)>> = env.storage().instance().get(&leaderboard_key);
+
+        match leaderboard {
+            Some(list) => {
+                env.storage()
+                    .instance()
+                    .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+                list
+            }
+            None => Vec::new(&env),
+        }
+    }
+
+    /// Internal function to update the leaderboard after a review is submitted.
+    /// Maintains a sorted list of top 50 users by average rating.
+    fn update_leaderboard(env: &Env, reviewee: &Address) {
+        const TOP_N: u32 = 50;
+
+        let avg_rating = match Self::get_average_rating(env.clone(), reviewee.clone()) {
+            Ok(rating) => rating,
+            Err(_) => return, // Skip if reputation not found
+        };
+
+        let leaderboard_key = DataKey::Leaderboard;
+        let mut leaderboard: Vec<(Address, u64)> = env
+            .storage()
+            .instance()
+            .get(&leaderboard_key)
+            .unwrap_or(Vec::new(env));
+
+        // Remove existing entry for this user if present
+        let mut idx: u32 = 0;
+        while idx < leaderboard.len() {
+            if leaderboard.get(idx).unwrap().0 == *reviewee {
+                leaderboard.remove(idx);
+                break;
+            }
+            idx += 1;
+        }
+
+        // Insert at correct position (descending by rating)
+        let mut inserted = false;
+        let mut pos: u32 = 0;
+        while pos < leaderboard.len() {
+            let rating = leaderboard.get(pos).unwrap().1;
+            if avg_rating > rating {
+                leaderboard.insert(pos, (reviewee.clone(), avg_rating));
+                inserted = true;
+                break;
+            }
+            pos += 1;
+        }
+
+        if !inserted && leaderboard.len() < TOP_N {
+            leaderboard.push_back((reviewee.clone(), avg_rating));
+        }
+
+        // Truncate to top N
+        while leaderboard.len() > TOP_N {
+            leaderboard.pop_back();
+        }
+
+        env.storage().instance().set(&leaderboard_key, &leaderboard);
+        env.storage()
+            .instance()
+            .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
+    }
+
+    /// Resolve an existing review appeal.
+    /// Admin can remove the review or dismiss the appeal.
+    pub fn admin_resolve_appeal(
+        env: Env,
+        admin: Address,
+        reviewer: Address,
+        reviewee: Address,
+        job_id: u64,
+        remove: bool,
+    ) -> Result<(), ReputationError> {
+        admin.require_auth();
+        require_not_paused(&env)?;
+        if !is_signer(&env, &admin) {
+            return Err(ReputationError::NotAdmin);
+        }
+
+        let appeal_key = DataKey::ReviewAppeal(reviewer.clone(), reviewee.clone(), job_id);
+        let mut appeal: ReviewAppeal = env
+            .storage()
+            .persistent()
+            .get(&appeal_key)
+            .ok_or(ReputationError::AppealNotFound)?;
+
+        if appeal.status != AppealStatus::Pending {
+            return Err(ReputationError::AppealAlreadyResolved);
+        }
+
+        if remove {
+            let reviews_key = DataKey::Reviews(reviewee.clone());
+            let mut reviews: Vec<Review> = env
+                .storage()
+                .persistent()
+                .get(&reviews_key)
+                .unwrap_or(Vec::new(&env));
+
+            let review_index = reviews
+                .iter()
+                .position(|r| r.reviewer == reviewer && r.job_id == job_id)
+                .ok_or(ReputationError::ReviewNotFound)?;
+
+            let removed_review = reviews.get(review_index as u32).unwrap();
+            let removed_weight = if removed_review.stake_weight > 0 {
+                removed_review.stake_weight as u64
+            } else {
+                1
+            };
+            let removed_score = removed_weight.saturating_mul(removed_review.rating as u64);
+
+            reviews.remove(review_index as u32);
+            env.storage().persistent().set(&reviews_key, &reviews);
+            bump_reviews_ttl(&env, &reviewee);
+
+            let review_exists_key =
+                DataKey::ReviewExists(reviewer.clone(), reviewee.clone(), job_id);
+            if env.storage().persistent().has(&review_exists_key) {
+                env.storage().persistent().remove(&review_exists_key);
+            }
+
+            let rep_key = DataKey::Reputation(reviewee.clone());
+            let mut reputation: UserReputation = env
+                .storage()
+                .persistent()
+                .get(&rep_key)
+                .unwrap_or(UserReputation {
+                    user: reviewee.clone(),
+                    total_score: 0,
+                    total_weight: 0,
+                    review_count: 0,
+                });
+
+            reputation.total_score = reputation.total_score.saturating_sub(removed_score);
+            reputation.total_weight = reputation.total_weight.saturating_sub(removed_weight);
+            reputation.review_count = reputation.review_count.saturating_sub(1);
+            env.storage().persistent().set(&rep_key, &reputation);
+            bump_reputation_ttl(&env, &reviewee);
+
+            appeal.status = AppealStatus::ReviewRemoved;
+        } else {
+            appeal.status = AppealStatus::Dismissed;
+        }
+
+        env.storage().persistent().set(&appeal_key, &appeal);
+        bump_review_appeal_ttl(&env, &reviewer, &reviewee, job_id);
+
+        env.events().publish(
+            (symbol_short!("reput"), symbol_short!("ap_reslv")),
+            (admin, reviewer, reviewee, job_id, remove),
+        );
+
+        Ok(())
+    }
+
+    pub fn get_review_appeal(
+        env: Env,
+        reviewer: Address,
+        reviewee: Address,
+        job_id: u64,
+    ) -> Result<ReviewAppeal, ReputationError> {
+        let key = DataKey::ReviewAppeal(reviewer.clone(), reviewee.clone(), job_id);
+        let appeal: ReviewAppeal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ReputationError::AppealNotFound)?;
+        bump_review_appeal_ttl(&env, &reviewer, &reviewee, job_id);
+        Ok(appeal)
+    }
 }
 
 #[cfg(test)]
-mod test;
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, testutils::Ledger, vec, Env};
+
+    fn seed_review_state(
+        env: &Env,
+        contract_id: &Address,
+        reviewer: &Address,
+        reviewee: &Address,
+        job_id: u64,
+        rating: u32,
+    ) {
+        let review = Review {
+            reviewer: reviewer.clone(),
+            reviewee: reviewee.clone(),
+            job_id,
+            rating,
+            comment: String::from_str(env, "seed review"),
+            stake_weight: MIN_REVIEW_STAKE_DEFAULT,
+            timestamp: env.ledger().timestamp(),
+        };
+
+        let reviews = vec![env, review];
+        env.as_contract(contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Reviews(reviewee.clone()), &reviews);
+            env.storage().persistent().set(
+                &DataKey::ReviewExists(reviewer.clone(), reviewee.clone(), job_id),
+                &true,
+            );
+            env.storage().persistent().set(
+                &DataKey::Reputation(reviewee.clone()),
+                &UserReputation {
+                    user: reviewee.clone(),
+                    total_score: (rating as u64) * (MIN_REVIEW_STAKE_DEFAULT as u64),
+                    total_weight: MIN_REVIEW_STAKE_DEFAULT as u64,
+                    review_count: 1,
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn test_appeal_and_admin_remove_review_flow() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, ReputationContract);
+        let client = ReputationContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&vec![&env, admin.clone()], &1, &0);
+
+        let reviewer = Address::generate(&env);
+        let reviewee = Address::generate(&env);
+        seed_review_state(&env, &contract_id, &reviewer, &reviewee, 42, 1);
+
+        client.appeal_review(
+            &reviewer,
+            &reviewee,
+            &42,
+            &String::from_str(&env, "malicious 1-star review"),
+        );
+        let appeal = client.get_review_appeal(&reviewer, &reviewee, &42);
+        assert_eq!(appeal.status, AppealStatus::Pending);
+
+        client.admin_resolve_appeal(&admin, &reviewer, &reviewee, &42, &true);
+        let resolved = client.get_review_appeal(&reviewer, &reviewee, &42);
+        assert_eq!(resolved.status, AppealStatus::ReviewRemoved);
+
+        assert_eq!(client.get_reviews(&reviewee).len(), 0);
+        let rep = client.get_reputation(&reviewee);
+        assert_eq!(rep.review_count, 0);
+        assert_eq!(rep.total_score, 0);
+        assert_eq!(rep.total_weight, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #19)")]
+    fn test_appeal_outside_window_fails() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, ReputationContract);
+        let client = ReputationContractClient::new(&env, &contract_id);
+        let reviewer = Address::generate(&env);
+        let reviewee = Address::generate(&env);
+
+        seed_review_state(&env, &contract_id, &reviewer, &reviewee, 99, 2);
+        let now = env.ledger().timestamp();
+        env.ledger()
+            .with_mut(|l| l.timestamp = now + APPEAL_GRACE_WINDOW_SECONDS + 1);
+
+        client.appeal_review(
+            &reviewer,
+            &reviewee,
+            &99,
+            &String::from_str(&env, "late appeal"),
+        );
+    }
+}

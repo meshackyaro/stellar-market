@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { logger } from "../lib/logger";
 
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
@@ -23,7 +24,7 @@ export function getRedisClient(): Redis | null {
     });
 
     redis.on("error", (err) => {
-      console.warn("Redis connection error (caching disabled):", err.message);
+      logger.warn({ err }, "Redis connection error (caching disabled)");
     });
 
     redis.connect().catch(() => {
