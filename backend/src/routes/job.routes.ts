@@ -709,11 +709,23 @@ router.post(
         deadline: new Date(deadline),
         clientId: req.userId!,
       },
-      include: { milestones: true },
+      include: {
+        milestones: true,
+        client: { select: { id: true, username: true, avatarUrl: true } },
+        _count: { select: { applications: true } },
+      },
     });
 
     await invalidateCache("jobs:list:*");
     void RecommendationQueueService.enqueueRebuild(job.id);
+
+    try {
+      const { getIo } = await import("../socket");
+      const io = getIo();
+      io.emit("job:created", job);
+    } catch {
+      // Socket not initialized (e.g., in tests)
+    }
 
     res.status(201).json(job);
   }),

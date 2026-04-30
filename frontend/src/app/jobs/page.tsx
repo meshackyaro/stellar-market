@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
-import { Search, SlidersHorizontal, Briefcase, Loader2 } from "lucide-react";
+import { Search, SlidersHorizontal, Briefcase, Loader2, Wifi, ArrowUp } from "lucide-react";
 import axios from "axios";
 import JobCard from "@/components/JobCard";
 import JobCardSkeleton from "@/components/skeletons/JobCardSkeleton";
@@ -9,6 +9,7 @@ import FilterSidebar from "@/components/FilterSidebar";
 import EmptyState from "@/components/EmptyState";
 import { useJobFilters } from "@/hooks/useJobFilters";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
+import { useLiveJobFeed } from "@/hooks/useLiveJobFeed";
 import { useAuth } from "@/context/AuthContext";
 import { Job, PaginatedResponse } from "@/types";
 
@@ -35,6 +36,10 @@ function JobsContent() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [liveFeedEnabled, setLiveFeedEnabled] = useState(false);
+  const [newJobIds, setNewJobIds] = useState<Set<string>>(new Set());
+
+  const { pendingJobs, clearPending } = useLiveJobFeed(liveFeedEnabled);
 
   // Store the filter "signature" so we can detect when filters change (reset to page 1)
   const filterKey = JSON.stringify({
@@ -116,6 +121,21 @@ function JobsContent() {
     fetchFirstPage();
   }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const loadNewJobs = useCallback(() => {
+    if (pendingJobs.length === 0) return;
+    setJobs((prev) => {
+      const existingIds = new Set(prev.map((j) => j.id));
+      const fresh = pendingJobs.filter((j) => !existingIds.has(j.id));
+
+      setTotal((t) => t + fresh.length);
+      setNewJobIds(new Set(fresh.map((j) => j.id)));
+
+      return [...fresh, ...prev];
+    });
+    clearPending();
+    setTimeout(() => setNewJobIds(new Set()), 3000);
+  }, [pendingJobs, clearPending]);
+
   const { sentinelRef } = useInfiniteScroll({
     onLoadMore: fetchNextPage,
     hasMore,
@@ -127,7 +147,21 @@ function JobsContent() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-theme-heading">Browse Jobs</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-bold text-theme-heading">Browse Jobs</h1>
+          <button
+            onClick={() => setLiveFeedEnabled((v) => !v)}
+            className={`hidden sm:flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-full border transition-colors ${
+              liveFeedEnabled
+                ? "bg-stellar-blue/20 border-stellar-blue text-stellar-blue"
+                : "border-dark-border text-dark-text hover:border-stellar-blue hover:text-stellar-blue"
+            }`}
+            title={liveFeedEnabled ? "Disable live feed" : "Enable live feed"}
+          >
+            <Wifi size={14} />
+            Live Feed
+          </button>
+        </div>
         <button
           onClick={() => setDrawerOpen(true)}
           className="lg:hidden flex items-center gap-2 btn-secondary py-2 px-4 relative"
@@ -171,6 +205,17 @@ function JobsContent() {
 
         {/* Results */}
         <div className="flex-1 min-w-0">
+          {/* Live feed banner */}
+          {liveFeedEnabled && pendingJobs.length > 0 && (
+            <button
+              onClick={loadNewJobs}
+              className="w-full flex items-center justify-center gap-2 bg-stellar-blue/90 hover:bg-stellar-blue text-white text-sm font-medium py-2.5 px-4 rounded-lg mb-4 transition-colors animate-slide-in-left"
+            >
+              <ArrowUp size={14} />
+              {pendingJobs.length} new job{pendingJobs.length !== 1 ? "s" : ""} — click to load
+            </button>
+          )}
+
           {/* Results count */}
           {!loading && (
             <p className="text-sm text-theme-text mb-4">
@@ -188,7 +233,12 @@ function JobsContent() {
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {jobs.map((job) => (
-                  <JobCard key={job.id} job={job} />
+                  <div
+                    key={job.id}
+                    className={newJobIds.has(job.id) ? "animate-fade-down ring-2 ring-stellar-blue/40 rounded-xl" : ""}
+                  >
+                    <JobCard job={job} />
+                  </div>
                 ))}
               </div>
 

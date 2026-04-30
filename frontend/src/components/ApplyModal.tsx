@@ -20,8 +20,8 @@ const TIMELINE_OPTIONS = [
   { label: "Custom", days: 0 },
 ];
 
-const MIN_PROPOSAL_LENGTH = 20;
-const MAX_PROPOSAL_LENGTH = 2000;
+const MIN_PROPOSAL_LENGTH = 100;
+const MAX_PROPOSAL_LENGTH = 1000;
 
 interface ApplyModalProps {
   job: Job;
@@ -71,9 +71,9 @@ export default function ApplyModal({
     if (!proposal.trim()) {
       errors.proposal = "Cover letter is required.";
     } else if (plainText.length < MIN_PROPOSAL_LENGTH) {
-      errors.proposal = `Cover letter must be at least ${MIN_PROPOSAL_LENGTH} characters. Currently ${plainText.length}.`;
+      errors.proposal = `Proposal must be at least ${MIN_PROPOSAL_LENGTH} characters.`;
     } else if (plainText.length > MAX_PROPOSAL_LENGTH) {
-      errors.proposal = `Cover letter must be less than ${MAX_PROPOSAL_LENGTH} characters. Currently ${plainText.length}.`;
+      errors.proposal = `Proposal must be less than ${MAX_PROPOSAL_LENGTH} characters.`;
     }
 
     if (!bidAmount || bidAmount <= 0) {
@@ -203,7 +203,7 @@ export default function ApplyModal({
                     : "text-green-400"
                 }`}
               >
-                {plainTextLength}
+                {plainTextLength} / {MAX_PROPOSAL_LENGTH}
               </span>
             </div>
           </div>

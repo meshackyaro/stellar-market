@@ -14,9 +14,11 @@ import {
   Info,
   CheckCircle2,
   AlertCircle,
+  FileText,
+  Images,
 } from "lucide-react";
 import axios from "axios";
-import { UserProfile } from "@/types";
+import { UserProfile, PortfolioItem } from "@/types";
 import Link from "next/link";
 import Image from "next/image";
 import Skeleton from "@/components/Skeleton";
@@ -26,6 +28,8 @@ import ShareMenu from "@/components/ShareMenu";
 import ProfileSkeleton from "@/components/skeletons/ProfileSkeleton";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+// Base URL without /api for serving static files
+const BASE_URL = API_URL.replace(/\/api\/?$/, "");
 
 export default function ProfileClient() {
   const { id } = useParams();
@@ -40,6 +44,9 @@ export default function ProfileClient() {
 
   const [reputationLoading, setReputationLoading] = useState(false);
   const [reputation, setReputation] = useState<ReputationResult | null>(null);
+
+  const [portfolioItems, setPortfolioItems] = useState<PortfolioItem[]>([]);
+  const [lightboxItem, setLightboxItem] = useState<PortfolioItem | null>(null);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -58,6 +65,14 @@ export default function ProfileClient() {
     if (id) {
       fetchProfile();
     }
+  }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    axios
+      .get(`${API_URL}/portfolio/user/${id}`)
+      .then((res) => setPortfolioItems(res.data.items ?? []))
+      .catch(() => setPortfolioItems([]));
   }, [id]);
 
   useEffect(() => {
@@ -513,6 +528,99 @@ export default function ProfileClient() {
           </div>
         </div>
       </div>
+
+      {/* Portfolio Gallery - shown for freelancers with items */}
+      {profile.role === "FREELANCER" && portfolioItems.length > 0 && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-12">
+          <h2 className="text-2xl font-bold text-theme-heading mb-6 flex items-center gap-2">
+            <Images size={22} />
+            Portfolio
+          </h2>
+          <div className="columns-1 sm:columns-2 md:columns-3 gap-4 space-y-4">
+            {portfolioItems.map((item) => (
+              <div
+                key={item.id}
+                className="break-inside-avoid rounded-xl overflow-hidden border border-theme-border bg-theme-card cursor-pointer hover:border-stellar-blue/40 transition-colors group"
+                onClick={() => setLightboxItem(item)}
+              >
+                {item.mimeType.startsWith("image/") ? (
+                  <Image
+                    src={`${BASE_URL}${item.fileUrl}`}
+                    alt={item.title}
+                    width={400}
+                    height={300}
+                    className="w-full object-cover group-hover:opacity-90 transition-opacity"
+                    unoptimized
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-10 px-4">
+                    <FileText size={40} className="text-theme-text opacity-50 mb-3" />
+                    <p className="text-theme-text text-xs text-center">{item.fileName}</p>
+                  </div>
+                )}
+                <div className="p-3">
+                  <p className="font-medium text-theme-heading text-sm">{item.title}</p>
+                  {item.description && (
+                    <p className="text-theme-text text-xs mt-1 line-clamp-2">{item.description}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Lightbox */}
+      {lightboxItem && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setLightboxItem(null)}
+        >
+          <div
+            className="relative max-w-4xl w-full max-h-[90vh] bg-theme-card rounded-2xl overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setLightboxItem(null)}
+              className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-black/50 text-white hover:bg-black/70 transition-colors"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+            {lightboxItem.mimeType.startsWith("image/") ? (
+              <Image
+                src={`${BASE_URL}${lightboxItem.fileUrl}`}
+                alt={lightboxItem.title}
+                width={1200}
+                height={900}
+                className="w-full max-h-[70vh] object-contain"
+                unoptimized
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center py-16 px-8">
+                <FileText size={64} className="text-theme-text opacity-50 mb-4" />
+                <p className="text-theme-heading font-medium text-lg mb-2">{lightboxItem.title}</p>
+                <p className="text-theme-text text-sm mb-4">{lightboxItem.fileName}</p>
+                <a
+                  href={`${BASE_URL}${lightboxItem.fileUrl}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn-primary flex items-center gap-2"
+                >
+                  <ExternalLink size={16} />
+                  Open PDF
+                </a>
+              </div>
+            )}
+            <div className="p-4 border-t border-theme-border">
+              <p className="font-semibold text-theme-heading">{lightboxItem.title}</p>
+              {lightboxItem.description && (
+                <p className="text-theme-text text-sm mt-1">{lightboxItem.description}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

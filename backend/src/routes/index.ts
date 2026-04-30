@@ -15,6 +15,7 @@ import disputeRoutes from "./dispute.routes";
 import recommendationRoutes from "./recommendation.routes";
 import freelancerRoutes from "./freelancer.routes";
 import platformRoutes from "./platform.routes";
+import portfolioRoutes from "./portfolio.routes";
 import webhookRoutes from "./webhook.routes";
 
 const router = Router();
@@ -35,6 +36,7 @@ router.use("/admin", adminRoutes);
 router.use("/disputes", disputeRoutes);
 router.use("/freelancers", freelancerRoutes);
 router.use("/platform", platformRoutes);
+router.use("/portfolio", portfolioRoutes);
 router.use("/webhooks", webhookRoutes);
 
 export default router;

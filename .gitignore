@@ -38,3 +38,4 @@ coverage/
 checks.md
 issue.md
 pr.md
+*.tsbuildinfo

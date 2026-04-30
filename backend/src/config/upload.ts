@@ -20,14 +20,31 @@ export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const AVATAR_MAX_SIZE = 2 * 1024 * 1024;
 const AVATAR_MIME_TYPES = ["image/jpeg", "image/png"];
 
+export const PORTFOLIO_MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB per portfolio file
+export const PORTFOLIO_MAX_ITEMS = 10;
+export const PORTFOLIO_MIME_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+];
+
 const UPLOAD_DIR =
   process.env.UPLOAD_DIR || path.join(__dirname, "../../uploads");
 
 export const AVATAR_UPLOAD_DIR =
   process.env.AVATAR_UPLOAD_DIR || path.join(UPLOAD_DIR, "avatars");
 
+export const PORTFOLIO_UPLOAD_DIR =
+  process.env.PORTFOLIO_UPLOAD_DIR || path.join(UPLOAD_DIR, "portfolio");
+
 if (!fs.existsSync(AVATAR_UPLOAD_DIR)) {
   fs.mkdirSync(AVATAR_UPLOAD_DIR, { recursive: true });
+}
+
+if (!fs.existsSync(PORTFOLIO_UPLOAD_DIR)) {
+  fs.mkdirSync(PORTFOLIO_UPLOAD_DIR, { recursive: true });
 }
 
 // Upload directory (ensure after AVATAR_UPLOAD_DIR for env)
@@ -102,3 +119,28 @@ export const avatarUpload = multer({
   fileFilter: avatarFileFilter,
   limits: { fileSize: AVATAR_MAX_SIZE },
 });
+
+const portfolioStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, PORTFOLIO_UPLOAD_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+    const ext = path.extname(file.originalname);
+    cb(null, `portfolio-${uniqueSuffix}${ext}`);
+  },
+});
+
+const portfolioFileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
+  if (!PORTFOLIO_MIME_TYPES.includes(file.mimetype)) {
+    return cb(new Error("Portfolio files must be JPG, PNG, GIF, WebP, or PDF."));
+  }
+  cb(null, true);
+};
+
+export const portfolioUpload = multer({
+  storage: portfolioStorage,
+  fileFilter: portfolioFileFilter,
+  limits: { fileSize: PORTFOLIO_MAX_FILE_SIZE },
+});
+
